@@ -10,4 +10,4 @@ The queue starts empty. All output sizes come from scheduler results; batch savi
 
 Processing remains local and telemetry remains optional and off by default. The privacy dialog uses native modal behavior for focus containment and restoration. Test the built entry through `playwright.config.ts`, including a real ZIP round trip and no-upload network assertions.
 
-One selected file uses direct output and Compress file / Download file labels, with no ZIP packaging step. Multiple selected files retain Smash into ZIP / Download ZIP. The summary and explicit local disk picker follow the same distinction; original-retained files keep their format without a new wrapper.
+One selected file uses direct output and Compress file / Download file labels, with no ZIP packaging step. An unchanged single file shows its preservation reason and no duplicate download or disk write. Multiple selected files retain Smash into ZIP / Download ZIP and include unchanged originals. The summary and typed local disk picker follow the same distinction. Do not label a memory/codec fallback as already optimal.

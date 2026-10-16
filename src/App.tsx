@@ -8,6 +8,9 @@ import { LazyBoundary } from './components/LazyBoundary';
 const FileList = lazy(() =>
   import('./components/FileList').then((module) => ({ default: module.FileList }))
 );
+const SaveToDisk = lazy(() =>
+  import('./components/SaveToDisk').then((module) => ({ default: module.SaveToDisk }))
+);
 import { PixelArt } from './components/PixelArt';
 
 function UploadIcon() {
@@ -52,6 +55,7 @@ export default function App() {
   const singleFile = order.length === 1;
   const outputLabel = singleFile ? 'file' : 'ZIP';
   const complete = phase === 'complete';
+  const unchanged = complete && singleFile && !download;
   const editable = !busy && !complete;
   const drop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
@@ -68,13 +72,15 @@ export default function App() {
           : phase === 'failed'
             ? 'Batch stopped. Review the error below and retry.'
             : complete
-              ? singleFile
-                ? 'Your file is ready.'
-                : 'Your archive is ready.'
+              ? unchanged
+                ? 'Original retained. No duplicate saved.'
+                : singleFile
+                  ? 'Your file is ready.'
+                  : 'Your archive is ready.'
               : order.length
                 ? `${order.length} ${order.length === 1 ? 'file' : 'files'} ready to smash.`
                 : 'Ready when you are.';
-  const savings = complete && download ? queuedBytes - download.bytes : null;
+  const savings = unchanged ? 0 : complete && download ? queuedBytes - download.bytes : null;
   return (
     <div className="workspace">
       <a href="#workspace" className="skip-link">
@@ -179,44 +185,15 @@ export default function App() {
                 : 'A happy medium of quality and size.'}
           </p>
           {!busy && !complete && order.length > 0 && 'showSaveFilePicker' in window && (
-            <button
-              className="text-button"
-              onClick={() => {
-                void (async () => {
-                  try {
-                    const handle = await (
-                      window as unknown as {
-                        showSaveFilePicker: (options: unknown) => Promise<FileSystemFileHandle>;
-                      }
-                    ).showSaveFilePicker({
-                      suggestedName: singleFile ? files[order[0]!]!.name : 'BebiSmash.zip',
-                      ...(singleFile
-                        ? {}
-                        : {
-                            types: [
-                              {
-                                description: 'ZIP archive',
-                                accept: { 'application/zip': ['.zip'] },
-                              },
-                            ],
-                          }),
-                    });
-                    const { FileSystemArchiveSink } = await import('./services/sink');
-                    await startSmash(new FileSystemArchiveSink(handle));
-                  } catch (error) {
-                    if (!(error instanceof DOMException && error.name === 'AbortError'))
-                      useSmashStore.setState({
-                        errorMessage:
-                          error instanceof Error
-                            ? error.message
-                            : 'Could not open local output file',
-                      });
-                  }
-                })();
-              }}
-            >
-              Save {outputLabel} to disk
-            </button>
+            <LazyBoundary>
+              <Suspense fallback={null}>
+                <SaveToDisk
+                  filename={singleFile ? files[order[0]!]!.name : 'BebiSmash.zip'}
+                  singleFile={singleFile}
+                  startSmash={startSmash}
+                />
+              </Suspense>
+            </LazyBoundary>
           )}
           {complete ? (
             <button className="pixel-button" onClick={reset}>
@@ -296,9 +273,11 @@ export default function App() {
                 {savings !== null
                   ? savings > 0
                     ? `${formatBytes(savings)} less to carry.`
-                    : singleFile
-                      ? 'Your file is ready.'
-                      : 'Your files, neatly packaged.'
+                    : unchanged
+                      ? 'No smaller file saved.'
+                      : singleFile
+                        ? 'Your file is ready.'
+                        : 'Your files, neatly packaged.'
                   : order.length
                     ? `${formatBytes(queuedBytes)} in your queue.`
                     : 'Make a little room.'}
@@ -308,9 +287,11 @@ export default function App() {
                   ? download.packaging === 'file'
                     ? `${formatBytes(download.bytes)} · ${download.name}`
                     : `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
-                  : singleFile
-                    ? 'Actual savings appear when your file is ready.'
-                    : 'Actual savings appear when your archive is ready.'}
+                  : unchanged
+                    ? 'Review the file result above. Your original is unchanged.'
+                    : singleFile
+                      ? 'Actual savings appear when your file is ready.'
+                      : 'Actual savings appear when your archive is ready.'}
               </p>
             </div>
           </div>
@@ -324,7 +305,11 @@ export default function App() {
             </a>
           ) : (
             <button className="pixel-button primary download-button" disabled>
-              {download?.kind === 'disk' ? 'Saved to disk' : `Download ${outputLabel}`}{' '}
+              {unchanged
+                ? 'No duplicate saved'
+                : download?.kind === 'disk'
+                  ? 'Saved to disk'
+                  : `Download ${outputLabel}`}{' '}
               <span aria-hidden="true">↓</span>
             </button>
           )}

@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
 
-test('local packaging, private network, download validity and new batch', async ({
+test('unchanged single file avoids duplicate downloads, stays private and resets', async ({
   page,
 }, testInfo) => {
   const requests: string[] = [];
@@ -16,6 +15,17 @@ test('local packaging, private network, download validity and new batch', async 
   await page.route('**/api/stats', (route) =>
     route.fulfill({ json: { total_files_smashed: 0, total_bytes_saved: 0 } })
   );
+  await page.addInitScript(() => {
+    document.addEventListener(
+      'change',
+      (event) => {
+        const input = event.target;
+        if (input instanceof HTMLInputElement && input.files?.length)
+          Object.assign(window, { originalFixture: input.files[0] });
+      },
+      true
+    );
+  });
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1 })).toContainText('A little lighter.');
   expect(engines).toEqual([]);
@@ -32,12 +42,18 @@ test('local packaging, private network, download validity and new batch', async 
   );
   await page.screenshot({ path: testInfo.outputPath('desktop-queued.png'), fullPage: true });
   await page.getByRole('button', { name: 'Compress file' }).click();
-  await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 20000 });
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('link', { name: 'Download file' }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe(filename);
-  expect(await readFile((await download.path())!, 'utf8')).toBe(source);
+  await expect(page.getByRole('main').getByRole('status')).toContainText(
+    'Original retained. No duplicate saved.'
+  );
+  await expect(page.getByRole('link', { name: 'Download file' })).toHaveCount(0);
+  await expect(page.locator('.file-row')).toContainText(
+    'Compression is not supported for this content.'
+  );
+  expect(
+    await page.evaluate(async () =>
+      (window as unknown as { originalFixture: File }).originalFixture.text()
+    )
+  ).toBe(source);
   expect(engines.some((url) => /zip\.worker/.test(url))).toBe(false);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -126,6 +142,8 @@ test('cancellation and worker failure retain files for retry', async ({ page }) 
   await expect(page.getByRole('alert')).toContainText('DECODE_FAILED');
   await page.unroute(workerPattern);
   await page.getByRole('button', { name: 'Retry batch' }).click();
-  await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 20000 });
+  await expect(page.getByRole('main').getByRole('status')).toContainText(
+    'Original retained. No duplicate saved.'
+  );
   await expect(page.getByRole('alert')).toHaveCount(0);
 });

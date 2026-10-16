@@ -180,6 +180,15 @@ export type WorkerCommand =
       type: 'cancel';
     });
 
+/** Local result diagnostics; never included in telemetry. */
+export type PreservationReason =
+  | 'memory_limit'
+  | 'unsupported_content'
+  | 'unsupported_codec'
+  | 'no_smaller_candidate'
+  | 'validation_failed'
+  | 'protected_document';
+
 export type WorkerEvent =
   | (JobEnvelope & {
       type: 'status';
@@ -216,6 +225,7 @@ export type WorkerEvent =
   | (JobEnvelope & {
       type: 'result';
       disposition: 'transformed' | 'original';
+      reason?: PreservationReason;
       outputBytes: number;
       mime: string;
       extension: string;

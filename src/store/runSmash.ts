@@ -2,6 +2,7 @@ import type { StoreApi } from 'zustand';
 import type { SmashState, FileState } from './useSmashStore';
 import type { IArchiveSink } from '../services/sink';
 import { detectHardwareProfile } from '../core/hardware';
+import { preservationMessage } from '../core/outcome';
 /** Loaded only after explicit processing starts; stale attempts cannot change the store. */
 export async function runSmash(
   state: SmashState,
@@ -107,19 +108,22 @@ export async function runSmash(
         } else if (event.type === 'result') {
           next.outputBytes = event.outputBytes;
           next.disposition = event.disposition;
+          next.preservationReason = event.reason;
           next.durationMs = event.durationMs;
           next.status = 'awaiting-pack';
           next.stage = state.order.length === 1 ? 'save' : 'pack';
           next.progress = null;
           next.lastProgressAt = now;
           next.detail =
-            event.disposition === 'original'
-              ? state.order.length === 1
-                ? 'Original retained; preparing download'
-                : 'Original retained; packaging without media compression'
-              : state.order.length === 1
-                ? 'Output prepared; saving file'
-                : 'Output prepared; packaging ZIP';
+            event.disposition === 'original' && state.order.length === 1
+              ? preservationMessage(event.reason)
+              : event.disposition === 'original'
+                ? state.order.length === 1
+                  ? 'Original retained; preparing download'
+                  : 'Original retained; packaging without media compression'
+                : state.order.length === 1
+                  ? 'Output prepared; saving file'
+                  : 'Output prepared; packaging ZIP';
         } else if (event.type === 'error') {
           next.error = event.error;
           next.status = 'failed';
@@ -129,13 +133,13 @@ export async function runSmash(
     });
     const result = await scheduler.processBatch(fileList, state.intensity, sink, state.order);
     if (!isCurrent()) {
-      if (result.archive.url) URL.revokeObjectURL(result.archive.url);
+      if (result.archive?.url) URL.revokeObjectURL(result.archive.url);
       return;
     }
     set({
       phase: 'complete',
       batchId: result.batchId,
-      archiveBytes: result.archive.bytes,
+      archiveBytes: result.archive?.bytes ?? 0,
       completedEntries: result.totalFiles,
       files: Object.fromEntries(
         state.order.map((id, index) => [
@@ -144,19 +148,31 @@ export async function runSmash(
             ...get().files[id]!,
             status: 'packed' as const,
             outputBytes: result.results[index]?.compressedBytes ?? null,
+            disposition: result.results[index]?.disposition ?? null,
+            preservationReason: result.results[index]?.reason,
             progress: 100,
-            detail: result.packaging === 'file' ? 'File ready' : 'Archive ready',
+            detail:
+              result.results[index]?.disposition === 'original'
+                ? preservationMessage(result.results[index]?.reason) +
+                  (result.packaging === 'zip'
+                    ? ' Original included in ZIP.'
+                    : ' No duplicate saved.')
+                : result.packaging === 'file'
+                  ? 'Smaller file ready'
+                  : 'Smaller file included in ZIP',
           },
         ])
       ),
-      download: {
-        name: result.archive.name,
-        bytes: result.archive.bytes,
-        kind: result.archive.kind,
-        packaging: result.packaging,
-        ready: true,
-        url: result.archive.url,
-      },
+      download: result.archive
+        ? {
+            name: result.archive.name,
+            bytes: result.archive.bytes,
+            kind: result.archive.kind,
+            packaging: result.packaging,
+            ready: true,
+            url: result.archive.url,
+          }
+        : null,
     });
 
     if (get().telemetryConsent && result.results && result.results.length > 0) {

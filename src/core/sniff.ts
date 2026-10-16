@@ -200,7 +200,7 @@ export function decideRoute(
       reservationBytes: calculateOfficeReservation(
         sourceBytes,
         Math.min(sourceBytes * 5, 64 * 1024 * 1024),
-        16 * 1024 * 1024
+        64 * 1024 * 1024
       ),
       reasonKey: 'm2_ooxml_adapter',
     };

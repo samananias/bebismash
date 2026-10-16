@@ -24,7 +24,7 @@ export function streamPrepared(
   source: File | ArrayBuffer,
   result: Pick<
     Extract<WorkerEvent, { type: 'result' }>,
-    'disposition' | 'outputBytes' | 'mime' | 'extension' | 'durationMs'
+    'disposition' | 'outputBytes' | 'mime' | 'extension' | 'durationMs' | 'reason'
   >
 ) {
   const { ids, status, stop } = observeJob(cmd);

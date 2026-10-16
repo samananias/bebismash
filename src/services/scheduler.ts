@@ -7,6 +7,7 @@ import type {
   ZipCommand,
   WorkerCommand,
   Stage,
+  PreservationReason,
 } from '../core/types';
 import { detectHardwareProfile } from '../core/hardware';
 import { sniffFile, decideRoute, createEnginePolicy } from '../core/sniff';
@@ -16,6 +17,7 @@ import { writeDirectOutput } from './directOutput';
 
 export type SchedulerEventListener = (event: WorkerEvent | ZipEvent) => void;
 export interface CompletedFileResult {
+  reason?: PreservationReason | undefined;
   disposition: 'original' | 'transformed';
   extension: string;
   category: 'image' | 'video' | 'document' | 'archive' | 'other';
@@ -28,7 +30,7 @@ export interface CompletedFileResult {
 export interface BatchResult {
   batchId: BatchId;
   packaging: 'file' | 'zip';
-  archive: ArchiveSinkResult;
+  archive: ArchiveSinkResult | null;
   totalFiles: number;
   results: CompletedFileResult[];
 }
@@ -240,12 +242,22 @@ export class BatchScheduler {
         const sniff = await race(sniffFile(file));
         const route = decideRoute(sniff, file.size, intensity);
         const overhead = 32 * 1024 * 1024;
-        // Video currently stages full input and output; account for those copies explicitly.
-        if (route.engine === 'video') route.reservationBytes += 4 * file.size;
         const available = this.profile.memoryBudgetBytes - overhead - 2 * retainedBytes;
+        // Range-read video retains bounded output, not the entire source. Reserve copies too.
+        const candidateCap =
+          route.engine === 'video'
+            ? Math.max(
+                0,
+                Math.min(
+                  file.size,
+                  this.profile.blobLimitBytes,
+                  Math.floor((available - route.reservationBytes) / 4)
+                )
+              )
+            : Math.min(file.size, this.profile.blobLimitBytes);
+        if (route.engine === 'video') route.reservationBytes += 4 * candidateCap;
         const originalOnly =
-          route.reservationBytes > available ||
-          (route.engine === 'video' && file.size > this.profile.blobLimitBytes);
+          route.reservationBytes > available || (route.engine === 'video' && candidateCap === 0);
         if (
           !customSink &&
           file.size + retainedBytes + (single ? 0 : 256 * 1024) > this.profile.blobLimitBytes
@@ -407,14 +419,32 @@ export class BatchScheduler {
               resultReceived ||
               !Number.isSafeInteger(event.outputBytes) ||
               event.outputBytes < 0 ||
-              event.outputBytes > file.size
+              event.outputBytes > file.size ||
+              !['original', 'transformed'].includes(event.disposition) ||
+              (event.disposition === 'original' && event.outputBytes !== file.size) ||
+              (event.disposition === 'transformed' && event.outputBytes >= file.size) ||
+              (event.reason !== undefined &&
+                ![
+                  'memory_limit',
+                  'unsupported_content',
+                  'unsupported_codec',
+                  'no_smaller_candidate',
+                  'validation_failed',
+                  'protected_document',
+                ].includes(event.reason))
             ) {
               fail(new Error('Invalid or duplicate worker result'));
               return;
             }
             resultReceived = true;
+            if (event.disposition === 'original') {
+              event.reason = originalOnly
+                ? 'memory_limit'
+                : (event.reason ?? (generic ? 'unsupported_content' : 'no_smaller_candidate'));
+            }
             completedResults.push({
               disposition: event.disposition,
+              reason: event.reason,
               extension: file.name.split('.').pop()?.toLowerCase() ?? 'other',
               category: route.category,
               intensity,
@@ -423,6 +453,12 @@ export class BatchScheduler {
               durationMs: event.durationMs,
               deviceTier: this.profile.tier,
             });
+            if (single && event.disposition === 'original') {
+              // No credit, writable, Blob URL or duplicate output for an unchanged single file.
+              this.emit(event);
+              packed?.();
+              return;
+            }
             // Filename controls must be removed before archive extraction.
             // eslint-disable-next-line no-control-regex
             const unsafeName = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069:]/g;
@@ -523,8 +559,11 @@ export class BatchScheduler {
                 intensity
               ),
               limits: {
-                maxInputBytes: Math.min(file.size, Math.floor(available / 6)),
-                maxOutputBytes: Math.min(file.size, this.profile.blobLimitBytes),
+                maxInputBytes:
+                  route.engine === 'video'
+                    ? file.size
+                    : Math.min(file.size, Math.floor(available / 6)),
+                maxOutputBytes: candidateCap,
                 maxPixels: Math.min(
                   maxPixels,
                   Math.max(
@@ -532,7 +571,7 @@ export class BatchScheduler {
                     Math.floor(
                       (available -
                         (route.engine === 'video'
-                          ? 4 * file.size + 128 * 1024 * 1024
+                          ? 4 * candidateCap + 128 * 1024 * 1024
                           : 2 * file.size + overhead)) /
                         (route.engine === 'video' ? 32 : 20)
                     )
@@ -564,7 +603,8 @@ export class BatchScheduler {
         await race(zipDone);
       }
       await race(writeChain);
-      const archive = await race(sink.close());
+      const archive =
+        single && completedResults[0]?.disposition === 'original' ? null : await race(sink.close());
       return {
         batchId,
         packaging: single ? 'file' : 'zip',

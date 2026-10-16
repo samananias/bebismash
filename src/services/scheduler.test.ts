@@ -242,7 +242,7 @@ describe('scheduler result, packing, failure and cancellation lifecycle', () => 
       const output = sink();
       if (closeFails) vi.mocked(output.close).mockRejectedValueOnce(new Error('disk full'));
       const filename = closeFails ? 'direct.txt' : `${'long-name-'.repeat(35)}.txt`;
-      const pending = scheduler.processBatch([new File(['hello'], filename)], 'balanced', output);
+      const pending = scheduler.processBatch([new File(['hello!'], filename)], 'balanced', output);
       const assertion = closeFails
         ? expect(pending).rejects.toThrow('disk full')
         : expect(pending).resolves.toMatchObject({ packaging: 'file' });
@@ -273,7 +273,7 @@ describe('scheduler result, packing, failure and cancellation lifecycle', () => 
         jobId: cmd.jobId,
         attemptId: cmd.attemptId,
         type: 'result',
-        disposition: 'original',
+        disposition: 'transformed',
         outputBytes: 5,
         mime: 'text/plain',
         extension: 'txt',
@@ -288,4 +288,55 @@ describe('scheduler result, packing, failure and cancellation lifecycle', () => 
       cmd.outputPort.close();
     }
   );
+  it('does not open, write or close the selected sink for an unchanged single file', async () => {
+    const scheduler = new BatchScheduler();
+    const output = sink();
+    const pending = scheduler.processBatch([new File(['hello'], 'source.txt')], 'balanced', output);
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    const worker = FakeWorker.all[0]!;
+    const cmd = worker.commands[0] as Extract<WorkerCommand, { type: 'start' }>;
+    worker.receive({
+      version: 1,
+      batchId: cmd.batchId,
+      jobId: cmd.jobId,
+      attemptId: cmd.attemptId,
+      type: 'result',
+      disposition: 'original',
+      outputBytes: 5,
+      mime: 'text/plain',
+      extension: 'txt',
+      durationMs: 1,
+    });
+    expect(await pending).toMatchObject({
+      archive: null,
+      results: [{ reason: 'unsupported_content', compressedBytes: 5 }],
+    });
+    expect(output.open).not.toHaveBeenCalled();
+    expect(output.write).not.toHaveBeenCalled();
+    expect(output.close).not.toHaveBeenCalled();
+    expect(worker.terminate).toHaveBeenCalled();
+    cmd.outputPort.close();
+  });
+  it('admits a large disk-backed video with bounded candidate memory on a high tier', async () => {
+    vi.stubGlobal('navigator', { hardwareConcurrency: 8, deviceMemory: 8, userAgent: 'Desktop' });
+    const scheduler = new BatchScheduler();
+    const file = new File(
+      [new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0])],
+      'large.mp4'
+    );
+    Object.defineProperty(file, 'size', { value: 600 * 1024 * 1024 });
+    const pending = scheduler.processBatch([file], 'balanced', sink());
+    const assertion = expect(pending).rejects.toThrow('cancelled');
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    const worker = FakeWorker.all[0]!;
+    const cmd = worker.commands[0] as Extract<WorkerCommand, { type: 'start' }>;
+    expect(worker.url.pathname).toContain('video.worker');
+    expect(cmd.source).toBe(file);
+    expect(cmd.config.limits.maxInputBytes).toBe(file.size);
+    expect(cmd.config.limits.maxOutputBytes).toBeLessThan(140 * 1024 * 1024);
+    expect(cmd.config.limits.maxOutputBytes).toBeGreaterThan(100 * 1024 * 1024);
+    await scheduler.cancel();
+    await assertion;
+    cmd.outputPort.close();
+  });
 });

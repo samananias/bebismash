@@ -11,6 +11,7 @@ import type {
   WireError,
   BatchSummary,
   WorkerEvent,
+  PreservationReason,
 } from '../core/types';
 
 export type FileStatus =
@@ -24,6 +25,7 @@ export type FileStatus =
   | 'cancelled';
 
 export interface FileState {
+  preservationReason?: PreservationReason | undefined;
   media?: Extract<WorkerEvent, { type: 'status' }>['media'];
   detail: string;
   engine: string | null;
@@ -245,6 +247,8 @@ export const useSmashStore = create<SmashState>((set, get) => ({
             status: 'queued' as const,
             attemptId: null,
             outputBytes: null,
+            disposition: null,
+            preservationReason: undefined,
             progress: null,
             stage: null,
             detail: 'Waiting for worker admission',

@@ -1,10 +1,11 @@
 /// <reference lib="webworker" />
 import type { WorkerCommand, WorkerEvent, DocumentPolicy } from '../core/types';
-import { parseImageMeta } from '../codecs/parser';
+import { parseImageMeta, scaleImageData } from '../codecs/parser';
 import type { ImageCodecAdapter } from '../codecs/types';
 
 import { observeJob, streamPrepared } from './jobRuntime';
 import { observeEngineDownloads } from './engineDownloads';
+import { canReencodeOfficeJpeg } from '../codecs/officeImage';
 let isCancelled = false;
 
 function emitWorkerEvent(event: WorkerEvent): void {
@@ -111,7 +112,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Scan for media files in word/media/, ppt/media/, xl/media/
         const mediaEntries = Object.keys(unzipped).filter((path) =>
-          /\bmedia\/[^/]+\.(png|jpe?g)$/i.test(path)
+          /^(word|ppt|xl)\/media\/[^/]+\.(png|jpe?g)$/i.test(path)
         );
 
         if (mediaEntries.length > 0) {
@@ -129,11 +130,14 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               meta.isAnimated ||
               meta.width <= 0 ||
               meta.height <= 0 ||
-              2 * entryBytes.byteLength + 20 * meta.width * meta.height > 16 * 1024 * 1024
+              meta.width * meta.height > config.limits.maxPixels ||
+              2 * entryBytes.byteLength + 20 * meta.width * meta.height >
+                Math.min(config.limits.maxEntryBytes, 64 * 1024 * 1024)
             )
               continue;
             const isPng = /\.png$/i.test(mediaPath);
             const isJpeg = /\.jpe?g$/i.test(mediaPath);
+            if ((isPng && meta.format !== 'png') || (isJpeg && meta.format !== 'jpeg')) continue;
 
             try {
               if (isPng) {
@@ -146,12 +150,16 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
                   unzipped[mediaPath] = new Uint8Array(opt);
                 }
               } else if (isJpeg) {
+                if (docPolicy.image.lossless || !canReencodeOfficeJpeg(entryBytes)) continue;
                 if (!jpegAdapter) {
                   const mod = await import('../codecs/jpeg');
                   jpegAdapter = mod.jpegAdapter;
                 }
                 const decoded = await jpegAdapter.decode(entryBytes.buffer);
-                const encoded = await jpegAdapter.encode(decoded, docPolicy.image);
+                const target = docPolicy.image.maxEdge
+                  ? scaleImageData(decoded, docPolicy.image.maxEdge)
+                  : decoded;
+                const encoded = await jpegAdapter.encode(target, docPolicy.image);
                 if (encoded && encoded.byteLength < entryBytes.byteLength) {
                   unzipped[mediaPath] = new Uint8Array(encoded);
                 }
@@ -200,6 +208,16 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       loading.ready();
       streamPrepared(cmd, finalBuffer, {
         disposition,
+        ...(disposition === 'original'
+          ? {
+              reason:
+                preflight.isSigned || preflight.isEncrypted
+                  ? ('protected_document' as const)
+                  : !preflight.valid || preflight.isMacroEnabled
+                    ? ('unsupported_content' as const)
+                    : ('no_smaller_candidate' as const),
+            }
+          : {}),
         outputBytes,
         mime,
         extension,

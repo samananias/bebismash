@@ -58,6 +58,25 @@ describe('Monoterm batch state', () => {
     expect(state.download?.bytes).toBe(120);
     expect(mocks.submit).not.toHaveBeenCalled();
   });
+  it('finishes an unchanged file with a reason and no download or claimed savings', async () => {
+    const unchanged = result();
+    unchanged.archive = null;
+    unchanged.results[0] = {
+      ...unchanged.results[0]!,
+      disposition: 'original',
+      compressedBytes: 7,
+      reason: 'memory_limit',
+    };
+    mocks.processBatch.mockResolvedValueOnce(unchanged);
+    useSmashStore.getState().stageFiles([file()]);
+    await useSmashStore.getState().startSmash();
+    const state = useSmashStore.getState();
+    expect(state.phase).toBe('complete');
+    expect(state.download).toBeNull();
+    expect(state.files[state.order[0]!]!.detail).toContain('safe memory budget');
+    expect(state.files[state.order[0]!]!.detail).toContain('No duplicate saved');
+    expect(mocks.submit).not.toHaveBeenCalled();
+  });
   it('submits only after completed output with consent still enabled', async () => {
     useSmashStore.getState().setTelemetryConsent(true);
     mocks.processBatch.mockResolvedValueOnce(result());

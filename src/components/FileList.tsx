@@ -67,7 +67,13 @@ export function FileList({
                 </strong>
                 {packed && (
                   <span className="saving">
-                    {reduction ? `−${reduction}%` : singleFile ? 'READY' : 'PACKED'}
+                    {reduction
+                      ? `−${reduction}%`
+                      : file.disposition === 'original'
+                        ? 'UNCHANGED'
+                        : singleFile
+                          ? 'READY'
+                          : 'PACKED'}
                   </span>
                 )}
               </div>

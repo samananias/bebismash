@@ -38,6 +38,7 @@ self.onmessage = async ({ data: cmd }: MessageEvent<WorkerCommand>) => {
       );
       streamPrepared(cmd, cmd.source, {
         disposition: 'original',
+        reason: !video || !inspection.isSupported ? 'unsupported_content' : 'memory_limit',
         outputBytes: cmd.source.size,
         mime: cmd.source.type || inspection.mime,
         extension: cmd.source.name.split('.').pop() || inspection.extension,
@@ -45,11 +46,10 @@ self.onmessage = async ({ data: cmd }: MessageEvent<WorkerCommand>) => {
       });
       return;
     }
-    job.status('read', 'Reading video into reserved worker memory');
-    const buffer = await cmd.source.arrayBuffer();
+    job.status('read', 'Reading video ranges; output stays within reserved worker memory');
     job.status('decode', 'Analyzing media tracks and codec availability');
     const result = await processVideo(
-      buffer,
+      cmd.source,
       cmd.config.policy,
       cmd.config.limits,
       (ratio) => {
@@ -65,9 +65,11 @@ self.onmessage = async ({ data: cmd }: MessageEvent<WorkerCommand>) => {
       },
       (stage, detail) => job.status(stage, detail)
     );
-    streamPrepared(cmd, result.disposition === 'original' ? cmd.source : result.buffer, {
+    if (result.disposition === 'transformed' && !result.buffer)
+      throw new Error('Missing video candidate');
+    streamPrepared(cmd, result.disposition === 'original' ? cmd.source : result.buffer!, {
       ...result,
-      outputBytes: result.buffer.byteLength,
+      outputBytes: result.disposition === 'original' ? cmd.source.size : result.buffer!.byteLength,
     });
   } catch (error) {
     postMessage({

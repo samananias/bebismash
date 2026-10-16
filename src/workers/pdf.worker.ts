@@ -105,6 +105,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       loading.ready();
       streamPrepared(cmd, finalBuffer, {
         disposition: rewriteResult.disposition,
+        ...(rewriteResult.reason ? { reason: rewriteResult.reason } : {}),
         outputBytes,
         mime: 'application/pdf',
         extension: 'pdf',

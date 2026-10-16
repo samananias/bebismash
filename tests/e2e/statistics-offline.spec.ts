@@ -75,7 +75,9 @@ test('stats load once across processing, idle and focus; reload refreshes and fa
     buffer: Buffer.from('private local contents'),
   });
   await page.getByRole('button', { name: 'Compress file', exact: true }).click();
-  await expect(page.getByRole('link', { name: 'Download file', exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('status')).toContainText(
+    'Original retained. No duplicate saved.'
+  );
   await page.getByRole('button', { name: 'New batch', exact: true }).click();
   expect(reads).toBe(1);
   await page.reload();
@@ -254,7 +256,9 @@ test('failed offline preparation never claims readiness and retains local proces
       buffer: Buffer.from('local'),
     });
     await page.getByRole('button', { name: 'Compress file', exact: true }).click();
-    await expect(page.getByRole('link', { name: 'Download file', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('status')).toContainText(
+      'Original retained. No duplicate saved.'
+    );
   } finally {
     await server.close();
   }

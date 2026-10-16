@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName } from 'pdf-lib';
+import type { DocumentPolicy } from '../core/types';
 import { preflightPdf, rewritePdf } from './pdf';
 import type { ResourceLimits } from '../core/types';
 
@@ -15,6 +16,35 @@ const defaultLimits: ResourceLimits = {
 };
 
 describe('Conservative PDF Baseline Adapter', () => {
+  it('preserves signature dictionaries hidden in compressed object streams', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage();
+    const signature = doc.context.register(
+      doc.context.obj({ Type: 'Sig', ByteRange: [0, 10, 20, 30] })
+    );
+    doc.catalog.set(PDFName.of('SignatureFixture'), signature);
+    const bytes = await doc.save({ useObjectStreams: true });
+    expect(preflightPdf(bytes.buffer as ArrayBuffer, defaultLimits).isSigned).toBe(false);
+    const policy: DocumentPolicy = {
+      kind: 'document',
+      image: {
+        kind: 'image',
+        quality: 75,
+        lossless: false,
+        maxEdge: null,
+        quantizeColors: null,
+        oxipngLevel: 3,
+        allowFormatChange: false,
+      },
+      deflateLevel: 9,
+      pdfMode: 'rewrite',
+      targetDpi: null,
+    };
+    const result = await rewritePdf(bytes.buffer as ArrayBuffer, policy, defaultLimits);
+    expect(result.disposition).toBe('original');
+    expect(result.reason).toBe('protected_document');
+    expect(new Uint8Array(result.buffer)).toEqual(bytes);
+  });
   it('preflights valid PDF headers and extracts version', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([300, 300]);

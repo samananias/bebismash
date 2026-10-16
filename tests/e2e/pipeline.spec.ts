@@ -200,21 +200,26 @@ for (const moving of [false, true])
       for (const byte of bytes) binary += String.fromCharCode(byte);
       return btoa(binary);
     }, moving);
-    await page.getByLabel('Choose files', { exact: true }).setInputFiles({
-      name: 'sample.webm',
-      mimeType: 'video/webm',
-      buffer: Buffer.from(sample, 'base64'),
-    });
-    await page.getByRole('button', { name: 'Compress file' }).click();
-    await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 30000 });
-    await page.getByText('What’s happening?', { exact: false }).click();
-    await expect(page.locator('.job-details')).toContainText('Mediabunny / WebCodecs');
-    await expect(page.locator('.job-details')).toContainText('160 × 120');
+    await page.getByLabel('Choose files', { exact: true }).setInputFiles([
+      {
+        name: 'sample.webm',
+        mimeType: 'video/webm',
+        buffer: Buffer.from(sample, 'base64'),
+      },
+      { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('retain all entries') },
+    ]);
+    await page.getByRole('button', { name: 'Smash into ZIP' }).click();
+    await expect(page.getByRole('link', { name: 'Download ZIP' })).toBeVisible({ timeout: 30000 });
+    await page.getByText('What’s happening?', { exact: false }).first().click();
+    await expect(page.locator('.job-details').first()).toContainText('Mediabunny / WebCodecs');
+    await expect(page.locator('.job-details').first()).toContainText('160 × 120');
     const download = page.waitForEvent('download');
-    await page.getByRole('link', { name: 'Download file' }).click();
+    await page.getByRole('link', { name: 'Download ZIP' }).click();
     const saved = await download;
-    expect(saved.suggestedFilename()).toBe('sample.webm');
-    const output = new Uint8Array(await readFile((await saved.path())!));
+    expect(saved.suggestedFilename()).toMatch(/\.zip$/);
+    const entries = unzipSync(new Uint8Array(await readFile((await saved.path())!)));
+    expect(new TextDecoder().decode(entries['notes.txt'])).toBe('retain all entries');
+    const output = entries['sample.webm']!;
     const dimensions = await page.evaluate(async (base64) => {
       const blob = new Blob(
         [Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))],

@@ -30,7 +30,10 @@ self.onmessage = async ({ data: cmd }: MessageEvent<WorkerCommand>) => {
       source.size > config.limits.maxInputBytes
     ) {
       job.status('output', 'Keeping original: animation or image exceeds safe processing limits');
-      streamPrepared(cmd, source, original);
+      streamPrepared(cmd, source, {
+        ...original,
+        reason: meta.isAnimated ? 'unsupported_content' : 'memory_limit',
+      });
       return;
     }
     if (config.policy.kind !== 'image') throw new Error('Image policy mismatch');
@@ -80,7 +83,7 @@ self.onmessage = async ({ data: cmd }: MessageEvent<WorkerCommand>) => {
         extension: meta.format === 'jpeg' ? 'jpg' : meta.format,
         durationMs: Math.round(performance.now() - start),
       });
-    } else streamPrepared(cmd, source, original);
+    } else streamPrepared(cmd, source, { ...original, reason: 'no_smaller_candidate' });
   } catch (error) {
     postMessage({
       ...job.ids,
