@@ -803,3 +803,132 @@ input {
     scroll-behavior: auto !important;
   }
 }
+
+.job-status {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-top: 10px;
+}
+.job-status-line {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+}
+.job-status-line strong {
+  text-transform: uppercase;
+}
+.job-status .block-progress {
+  margin-block: 8px;
+  height: 8px;
+}
+.block-progress.indeterminate span {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--line),
+    var(--line) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+}
+.job-detail,
+.job-next {
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.job-next {
+  color: var(--muted);
+}
+.job-details {
+  font-size: 12px;
+  line-height: 1.7;
+  margin-top: 10px;
+}
+.job-details summary {
+  cursor: pointer;
+  width: fit-content;
+  padding-block: 6px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.job-details dl {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(0, 3fr);
+  gap: 6px 16px;
+}
+.job-details dt {
+  font-weight: 700;
+}
+.job-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.job-details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  border: 1px solid var(--line);
+  padding: 12px;
+  max-height: 260px;
+  overflow: auto;
+}
+.engine-assets {
+  list-style: none;
+  padding: 0;
+}
+.engine-assets li {
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  padding-block: 8px;
+  overflow-wrap: anywhere;
+}
+.stall-notice {
+  margin-block: 14px;
+  border: 1px solid var(--ink);
+  background: #e5ddbf;
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.stall-notice p {
+  margin-block: 6px;
+}
+.job-actions {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.job-actions .text-button {
+  padding: 8px 0;
+  font-size: 12px;
+}
+@media (max-width: 520px) {
+  .job-details dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+  .job-details dd {
+    margin-bottom: 8px;
+  }
+}
+
+.file-symbol {
+  align-self: start;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

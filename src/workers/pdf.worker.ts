@@ -1,13 +1,8 @@
 /// <reference lib="webworker" />
-import type {
-  WorkerCommand,
-  WorkerEvent,
-  EntryData,
-  EntryControl,
-  DocumentPolicy,
-} from '../core/types';
-import { rewritePdf } from '../codecs/pdf';
+import type { WorkerCommand, WorkerEvent, DocumentPolicy } from '../core/types';
 
+import { observeJob, streamPrepared } from './jobRuntime';
+import { observeEngineDownloads } from './engineDownloads';
 let isCancelled = false;
 
 function emitWorkerEvent(event: WorkerEvent): void {
@@ -27,7 +22,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
     isCancelled = false;
     const { batchId, jobId, attemptId, source, config, outputPort } = cmd;
     const startTime = performance.now();
-    const sourceSize = source.size;
+    const observation = observeJob(cmd);
+    const loading = observeEngineDownloads(cmd);
 
     emitWorkerEvent({
       version: 1,
@@ -47,7 +43,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         seq: 1,
         stage: 'inspect',
         completed: 0,
-        total: sourceSize,
+        total: null,
         unit: 'bytes',
       });
 
@@ -62,8 +58,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         type: 'progress',
         seq: 2,
         stage: 'decode',
-        completed: Math.round(sourceSize * 0.3),
-        total: sourceSize,
+        completed: 0,
+        total: null,
         unit: 'bytes',
       });
 
@@ -83,6 +79,9 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         targetDpi: null,
       };
 
+      observation.status('load', 'Loading PDF engine');
+      const { rewritePdf } = await import('../codecs/pdf');
+      observation.status('transform', 'Rewriting PDF; percentage unavailable');
       const rewriteResult = await rewritePdf(fullSourceBuffer, docPolicy, config.limits);
       if (isCancelled) throw new Error('Cancelled');
 
@@ -94,8 +93,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         type: 'progress',
         seq: 3,
         stage: 'encode',
-        completed: Math.round(sourceSize * 0.8),
-        total: sourceSize,
+        completed: 0,
+        total: null,
         unit: 'bytes',
       });
 
@@ -103,92 +102,15 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       const outputBytes = finalBuffer.byteLength;
       const durationMs = Math.max(0, Math.round(performance.now() - startTime));
 
-      emitWorkerEvent({
-        version: 1,
-        batchId,
-        jobId,
-        attemptId,
-        type: 'result',
+      loading.ready();
+      streamPrepared(cmd, finalBuffer, {
         disposition: rewriteResult.disposition,
         outputBytes,
         mime: 'application/pdf',
         extension: 'pdf',
         durationMs,
       });
-
-      let offset = 0;
-      let seq = 0;
-
-      outputPort.onmessage = (portEvent: MessageEvent<EntryControl>) => {
-        const ctrl = portEvent.data;
-        if (!ctrl || ctrl.version !== 1) return;
-
-        if (ctrl.type === 'credit') {
-          if (isCancelled) {
-            outputPort.postMessage({
-              version: 1,
-              batchId,
-              jobId,
-              attemptId,
-              type: 'entry-abort',
-              entryId: ctrl.entryId,
-              error: {
-                code: 'CANCELLED',
-                retryable: false,
-                messageKey: 'job_cancelled',
-              },
-            });
-            outputPort.close();
-            return;
-          }
-
-          const maxBytes = ctrl.maxBytes || 256 * 1024;
-          const sliceLength = Math.min(outputBytes - offset, maxBytes);
-          const isFinal = offset + sliceLength >= outputBytes;
-
-          const sliceBuffer = finalBuffer.slice(offset, offset + sliceLength);
-
-          const entryChunk: EntryData = {
-            version: 1,
-            batchId,
-            jobId,
-            attemptId,
-            type: 'entry-chunk',
-            entryId: ctrl.entryId,
-            seq,
-            chunk: {
-              buffer: sliceBuffer,
-              byteLength: sliceBuffer.byteLength,
-            },
-            final: isFinal,
-          };
-
-          outputPort.postMessage(entryChunk, [sliceBuffer]);
-
-          offset += sliceLength;
-          seq++;
-
-          emitWorkerEvent({
-            version: 1,
-            batchId,
-            jobId,
-            attemptId,
-            type: 'progress',
-            seq,
-            stage: 'pack',
-            completed: offset,
-            total: outputBytes,
-            unit: 'bytes',
-          });
-
-          if (isFinal) {
-            outputPort.close();
-          }
-        }
-      };
-
-      outputPort.start();
-    } catch {
+    } catch (error) {
       emitWorkerEvent({
         version: 1,
         batchId,
@@ -198,10 +120,17 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         error: {
           code: isCancelled ? 'CANCELLED' : 'INTERNAL',
           retryable: false,
+          details:
+            error instanceof Error
+              ? `${error.message}\n${error.stack ?? ''}`.slice(0, 1800)
+              : 'Unknown worker error',
           messageKey: isCancelled ? 'job_cancelled' : 'pdf_processing_failed',
         },
       });
       outputPort.close();
+    } finally {
+      observation.stop();
+      loading.restore();
     }
   }
 };

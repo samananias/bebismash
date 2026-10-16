@@ -33,7 +33,18 @@ export type Format =
   | 'xlsx'
   | 'zip'
   | 'unknown';
-export type Stage = 'inspect' | 'load' | 'decode' | 'transform' | 'encode' | 'pack';
+export type Stage =
+  | 'inspect'
+  | 'load'
+  | 'init'
+  | 'start'
+  | 'read'
+  | 'decode'
+  | 'transform'
+  | 'encode'
+  | 'output'
+  | 'pack'
+  | 'save';
 export type ErrorCode =
   | 'INVALID_INPUT'
   | 'UNSUPPORTED'
@@ -50,6 +61,7 @@ export interface WireError {
   code: ErrorCode;
   retryable: boolean;
   messageKey: string; // local UI translation key, never raw file/codec text
+  details?: string; // bounded local diagnostics; never included in telemetry
 }
 
 export interface Envelope {
@@ -169,6 +181,28 @@ export type WorkerCommand =
     });
 
 export type WorkerEvent =
+  | (JobEnvelope & {
+      type: 'status';
+      stage: Stage;
+      detail: string;
+      engine?: string;
+      reservedBytes?: number;
+      media?: {
+        width: number;
+        height: number;
+        videoCodec: string;
+        audioCodec: string;
+        webCodecs: boolean;
+      };
+    })
+  | (JobEnvelope & { type: 'heartbeat' })
+  | (JobEnvelope & {
+      type: 'asset';
+      name: string;
+      state: 'downloading' | 'initializing' | 'ready' | 'cached' | 'failed';
+      completed: number;
+      total: number | null;
+    })
   | (JobEnvelope & { type: 'ready' })
   | (JobEnvelope & { type: 'input-credit'; nextOffset: number; maxBytes: number })
   | (JobEnvelope & {

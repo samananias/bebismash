@@ -6,7 +6,7 @@
  * Adheres to Section 4.3 and 3.2 of Master Engineering Blueprint.
  */
 
-import type { VideoPolicy, ResourceLimits } from '../core/types';
+import type { VideoPolicy, ResourceLimits, Stage } from '../core/types';
 import type { ConversionVideoOptions } from 'mediabunny';
 import { materializeStandaloneBuffer } from './types';
 
@@ -35,9 +35,6 @@ export interface VideoInspectionResult {
   reason?: string;
 }
 
-/**
- * Checks if browser environment natively supports WebCodecs (VideoEncoder, VideoDecoder)
- */
 export function isWebCodecsSupported(): boolean {
   return (
     typeof globalThis !== 'undefined' &&
@@ -46,13 +43,10 @@ export function isWebCodecsSupported(): boolean {
   );
 }
 
-/**
- * Bounded inspection of video container headers and tracks using Mediabunny.
- */
-export async function inspectVideo(buffer: ArrayBuffer): Promise<VideoInspectionResult> {
+export async function inspectVideo(buffer: ArrayBuffer | Blob): Promise<VideoInspectionResult> {
   const mb = await import('mediabunny');
 
-  const source = new mb.BufferSource(buffer);
+  const source = buffer instanceof Blob ? new mb.BlobSource(buffer) : new mb.BufferSource(buffer);
   const input = new mb.Input({
     source,
     formats: mb.ALL_FORMATS,
@@ -144,15 +138,46 @@ export interface VideoProcessingResult {
   durationMs: number;
 }
 
-/**
- * Remuxes or transcodes video based on policy and available capabilities.
- * If unsupported or if output is larger than input, preserves original byte-identical.
- */
+/** Reopen candidate before committing it to ZIP; a smaller empty container is not valid output. */
+export async function validateVideoCandidate(
+  buffer: ArrayBuffer,
+  original: VideoInspectionResult,
+  limits: ResourceLimits
+): Promise<boolean> {
+  if (buffer.byteLength === 0 || buffer.byteLength > limits.maxOutputBytes) return false;
+  const mb = await import('mediabunny');
+  const input = new mb.Input({ source: new mb.BufferSource(buffer), formats: mb.ALL_FORMATS });
+  try {
+    const video = await input.getVideoTracks();
+    const audio = await input.getAudioTracks();
+    if (
+      video.length !== original.videoTracks.length ||
+      audio.length !== original.audioTracks.length ||
+      video.length === 0
+    )
+      return false;
+    for (const track of [...video, ...audio]) {
+      const packet = await new mb.EncodedPacketSink(track).getFirstPacket();
+      if (!packet || packet.data.byteLength === 0) return false;
+    }
+    const duration = await input.computeDuration();
+    return (
+      Number.isFinite(duration) &&
+      (original.durationSec <= 0 || Math.abs(duration - original.durationSec) <= 0.05)
+    );
+  } catch {
+    return false;
+  } finally {
+    await input.dispose();
+  }
+}
+
 export async function processVideo(
   buffer: ArrayBuffer,
   policy: VideoPolicy,
   limits: ResourceLimits,
-  onProgress?: (ratio: number) => void
+  onProgress?: (ratio: number) => void,
+  onStatus?: (stage: Stage, detail: string) => void
 ): Promise<VideoProcessingResult> {
   const startTime = performance.now();
 
@@ -208,7 +233,7 @@ export async function processVideo(
     };
   }
 
-  try {
+  {
     const mb = await import('mediabunny');
     const source = new mb.BufferSource(buffer);
     const input = new mb.Input({
@@ -216,51 +241,96 @@ export async function processVideo(
       formats: mb.ALL_FORMATS,
     });
 
+    onStatus?.('init', 'Checking decoder / encoder configurations and initializing conversion');
     const target = new mb.BufferTarget();
+    target.onwrite = (_start, end) => {
+      if (end > limits.maxOutputBytes)
+        throw new Error('Video output exceeds reserved memory limit');
+    };
     const outputFormat =
-      inspection.format === 'webm' ? new mb.MkvOutputFormat() : new mb.Mp4OutputFormat();
+      inspection.format === 'webm' ? new mb.WebMOutputFormat() : new mb.Mp4OutputFormat();
 
     const output = new mb.Output({
       target,
       format: outputFormat,
     });
 
-    // Configure Conversion options based on policy
-    let conversion;
-    if (policy.mode === 'remux' || !hasWebCodecs) {
-      // Gentle preset: remux supported tracks
-      conversion = await mb.Conversion.init({
-        input,
-        output,
-        copy: {},
-        showWarnings: false,
-      });
-    } else {
-      // Transcode mode via Mediabunny & WebCodecs
-      const videoOptions: ConversionVideoOptions = {
-        bitrate: policy.webVideoBitrate,
-      };
-      if (policy.maxHeight) {
-        videoOptions.height = Math.min(primaryVideo.height, policy.maxHeight);
-      }
-      if (policy.maxFps) {
-        videoOptions.frameRate = policy.maxFps;
+    try {
+      // Configure Conversion options based on policy
+      let conversion;
+      if (policy.mode === 'remux' || !hasWebCodecs) {
+        // Gentle preset: remux supported tracks
+        conversion = await mb.Conversion.init({
+          input,
+          output,
+          copy: {},
+          showWarnings: false,
+        });
+      } else {
+        // Transcode mode via Mediabunny & WebCodecs
+        const videoOptions: ConversionVideoOptions = {
+          bitrate: policy.webVideoBitrate,
+        };
+        if (policy.maxHeight) {
+          videoOptions.height = Math.min(primaryVideo.height, policy.maxHeight);
+        }
+        if (policy.maxFps) {
+          videoOptions.frameRate = policy.maxFps;
+        }
+
+        conversion = await mb.Conversion.init({
+          input,
+          output,
+          copy: false,
+          showWarnings: false,
+          video: videoOptions,
+          audio: {
+            bitrate: policy.audioBitrate,
+          },
+        });
       }
 
-      conversion = await mb.Conversion.init({
-        input,
-        output,
-        copy: false,
-        showWarnings: false,
-        video: videoOptions,
-        audio: {
-          bitrate: policy.audioBitrate,
-        },
-      });
-    }
+      if (!conversion.isValid || conversion.discardedTracks.length > 0) {
+        return {
+          disposition: 'original',
+          buffer: materializeStandaloneBuffer(buffer),
+          mime: inspection.mime,
+          extension: inspection.extension,
+          durationMs: Math.round(performance.now() - startTime),
+        };
+      }
 
-    if (!conversion.isValid) {
-      await input.dispose();
+      if (onProgress) {
+        conversion.onProgress = (progress) => {
+          onProgress(progress);
+        };
+      }
+
+      onStatus?.(
+        'transform',
+        policy.mode === 'remux'
+          ? 'Remuxing supported tracks'
+          : 'Processing video with browser WebCodecs'
+      );
+      await conversion.execute();
+      onStatus?.('output', 'Finalizing video output and comparing sizes');
+
+      const resultBuffer = target.buffer;
+      if (
+        resultBuffer &&
+        resultBuffer.byteLength < buffer.byteLength &&
+        (await validateVideoCandidate(resultBuffer, inspection, limits))
+      ) {
+        return {
+          disposition: 'transformed',
+          buffer: materializeStandaloneBuffer(resultBuffer),
+          mime: inspection.mime,
+          extension: inspection.extension,
+          durationMs: Math.round(performance.now() - startTime),
+        };
+      }
+
+      onStatus?.('output', 'Candidate was larger or failed media validation; keeping original');
       return {
         disposition: 'original',
         buffer: materializeStandaloneBuffer(buffer),
@@ -268,42 +338,8 @@ export async function processVideo(
         extension: inspection.extension,
         durationMs: Math.round(performance.now() - startTime),
       };
+    } finally {
+      await input.dispose();
     }
-
-    if (onProgress) {
-      conversion.onProgress = (progress) => {
-        onProgress(progress);
-      };
-    }
-
-    await conversion.execute();
-    await input.dispose();
-
-    const resultBuffer = target.buffer;
-    if (resultBuffer && resultBuffer.byteLength < buffer.byteLength) {
-      return {
-        disposition: 'transformed',
-        buffer: materializeStandaloneBuffer(resultBuffer),
-        mime: inspection.mime,
-        extension: inspection.extension,
-        durationMs: Math.round(performance.now() - startTime),
-      };
-    }
-
-    return {
-      disposition: 'original',
-      buffer: materializeStandaloneBuffer(buffer),
-      mime: inspection.mime,
-      extension: inspection.extension,
-      durationMs: Math.round(performance.now() - startTime),
-    };
-  } catch {
-    return {
-      disposition: 'original',
-      buffer: materializeStandaloneBuffer(buffer),
-      mime: inspection.mime,
-      extension: inspection.extension,
-      durationMs: Math.round(performance.now() - startTime),
-    };
   }
 }

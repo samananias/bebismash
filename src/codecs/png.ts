@@ -1,5 +1,5 @@
 import { decode, encode } from '@jsquash/png';
-import { optimise } from '@jsquash/oxipng';
+import optimise from './oxipng';
 import type { ImageCodecAdapter, DecodedImage } from './types';
 import { materializeStandaloneBuffer } from './types';
 import type { ImagePolicy } from '../core/types';

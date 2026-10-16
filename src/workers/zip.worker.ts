@@ -1,225 +1,184 @@
 /// <reference lib="webworker" />
-import { Zip, ZipPassThrough, ZipDeflate } from 'fflate';
 import type { ZipCommand, ZipEvent, EntryData, EntryControl } from '../core/types';
 
-const CHUNK_SIZE = 256 * 1024; // 256 KiB max chunk size
-const BURST_LIMIT = 2 * 1024 * 1024; // 2 MiB burst allowance
-
-let currentZip: Zip | null = null;
-let currentBatchId: string | null = null;
-let activeEntryPort: MessagePort | null = null;
-let outSeq = 0;
-let totalArchiveBytes = 0;
-let packedEntriesCount = 0;
-let _expectedEntriesCount = 0;
-
-// Sink backpressure queue
-let inFlightBytes = 0;
-const burstQueue: { buffer: ArrayBuffer; final: boolean }[] = [];
-
-function emitZipEvent(event: ZipEvent, transfer?: Transferable[]): void {
-  if (transfer && transfer.length > 0) {
-    postMessage(event, transfer);
-  } else {
-    postMessage(event);
-  }
-}
-
-function flushBurstQueue(): void {
-  while (burstQueue.length > 0 && inFlightBytes < BURST_LIMIT) {
-    const item = burstQueue.shift()!;
-    inFlightBytes += item.buffer.byteLength;
-    outSeq++;
-
-    const chunkEvent: ZipEvent = {
+const CHUNK = 256 * 1024;
+self.onmessage = async ({ data: open }: MessageEvent<ZipCommand>) => {
+  if (open?.type !== 'open' || open.version !== 1) return;
+  const { Zip, ZipPassThrough, ZipDeflate } = await import('fflate');
+  const batchId = open.batchId;
+  const send = (event: ZipEvent, transfer: Transferable[] = []) => postMessage(event, transfer);
+  const queue: { buffer: ArrayBuffer; final: boolean }[] = [];
+  let seq = 0;
+  let outstanding: number | null = null;
+  let archiveBytes = 0;
+  let entries = 0;
+  let stopped = false;
+  let finalSeen = false;
+  let entryPort: MessagePort | null = null;
+  let grant: (() => void) | null = null;
+  const fail = (messageKey: string) => {
+    if (stopped) return;
+    stopped = true;
+    entryPort?.close();
+    queue.length = 0;
+    send({
       version: 1,
-      batchId: currentBatchId!,
-      type: 'zip-chunk',
-      seq: outSeq,
-      chunk: {
-        buffer: item.buffer,
-        byteLength: item.buffer.byteLength,
-      },
-      final: item.final,
-    };
-
-    emitZipEvent(chunkEvent, [item.buffer]);
-  }
-}
-
-function handleZipChunk(err: Error | null, data: Uint8Array, final: boolean): void {
-  if (err) {
-    emitZipEvent({
-      version: 1,
-      batchId: currentBatchId || 'unknown',
+      batchId,
       type: 'zip-error',
-      error: {
-        code: 'INTERNAL',
-        retryable: false,
-        messageKey: 'zip_compression_failed',
-      },
+      error: { code: 'PROTOCOL_ERROR', retryable: true, messageKey },
     });
-    return;
-  }
-
-  totalArchiveBytes += data.byteLength;
-
-  // Split into at most 256 KiB owned standalone ArrayBuffers
-  let offset = 0;
-  do {
-    const sliceLen = Math.min(data.byteLength - offset, CHUNK_SIZE);
-    const buffer = new ArrayBuffer(sliceLen);
-    new Uint8Array(buffer).set(data.subarray(offset, offset + sliceLen));
-    offset += sliceLen;
-
-    const isLastSlice = final && offset >= data.byteLength;
-    burstQueue.push({ buffer, final: isLastSlice });
-  } while (offset < data.byteLength);
-
-  flushBurstQueue();
-
-  if (final) {
-    emitZipEvent({
-      version: 1,
-      batchId: currentBatchId!,
-      type: 'zip-complete',
-      archiveBytes: totalArchiveBytes,
-      entries: packedEntriesCount,
-    });
-  }
-}
-
-self.onmessage = (e: MessageEvent<ZipCommand>) => {
-  const cmd = e.data;
-  if (!cmd || cmd.version !== 1) return;
-
-  switch (cmd.type) {
-    case 'open': {
-      currentBatchId = cmd.batchId;
-      _expectedEntriesCount = cmd.expectedEntries;
-      packedEntriesCount = 0;
-      totalArchiveBytes = 0;
-      outSeq = 0;
-      inFlightBytes = 0;
-      burstQueue.length = 0;
-
-      currentZip = new Zip((err, chunk, final) => {
-        handleZipChunk(err, chunk, final);
-      });
-
-      emitZipEvent({
-        version: 1,
-        batchId: currentBatchId,
-        type: 'zip-ready',
-      });
-      break;
-    }
-
-    case 'add': {
-      if (!currentZip || !currentBatchId) {
-        emitZipEvent({
+  };
+  const flush = () => {
+    if (stopped || outstanding !== null) return;
+    const item = queue.shift();
+    if (item) {
+      outstanding = ++seq;
+      send(
+        {
           version: 1,
-          batchId: cmd.batchId,
-          type: 'zip-error',
-          error: {
-            code: 'PROTOCOL_ERROR',
-            retryable: false,
-            messageKey: 'zip_not_open',
-          },
-        });
-        return;
-      }
-
-      const { entry, entryPort } = cmd;
-      activeEntryPort = entryPort;
-
-      const zipFile =
-        entry.method === 'deflate'
-          ? new ZipDeflate(entry.path, { level: entry.level })
-          : new ZipPassThrough(entry.path);
-
-      currentZip.add(zipFile);
-
-      let entrySeq = 0;
-      let totalEntryBytes = 0;
-
-      entryPort.onmessage = (entryEvent: MessageEvent<EntryData>) => {
-        const msg = entryEvent.data;
-        if (!msg || msg.version !== 1) return;
-
-        if (msg.type === 'entry-chunk') {
-          const chunkData = new Uint8Array(msg.chunk.buffer);
-          totalEntryBytes += chunkData.byteLength;
-          zipFile.push(chunkData, msg.final);
-
+          batchId,
+          type: 'zip-chunk',
+          seq,
+          chunk: { buffer: item.buffer, byteLength: item.buffer.byteLength },
+          final: item.final,
+        },
+        [item.buffer]
+      );
+    } else if (finalSeen) {
+      stopped = true;
+      send({ version: 1, batchId, type: 'zip-complete', archiveBytes, entries });
+    } else {
+      const next = grant;
+      grant = null;
+      next?.();
+    }
+  };
+  const zip = new Zip((error, data, final) => {
+    if (error) {
+      fail('zip_compression_failed');
+      return;
+    }
+    archiveBytes += data.byteLength;
+    if (archiveBytes > open.maxArchiveBytes) {
+      fail('archive_output_limit_exceeded');
+      return;
+    }
+    for (let offset = 0; offset < data.length; offset += CHUNK) {
+      const buffer = data.slice(offset, offset + CHUNK).buffer;
+      queue.push({ buffer, final: final && offset + CHUNK >= data.length });
+    }
+    if (final) finalSeen = true;
+    flush();
+  });
+  self.onmessage = ({ data: cmd }: MessageEvent<ZipCommand>) => {
+    if (stopped || cmd.batchId !== batchId) return;
+    if (cmd.version !== 1) {
+      fail('invalid_zip_protocol');
+      return;
+    }
+    try {
+      if (cmd.type === 'sink-ack') {
+        if (cmd.seq !== outstanding) {
+          fail('invalid_sink_ack');
+          return;
+        }
+        outstanding = null;
+        flush();
+      } else if (cmd.type === 'add') {
+        if (entryPort || entries >= open.expectedEntries) {
+          fail('unexpected_entry');
+          return;
+        }
+        const { entry, entryPort: port } = cmd;
+        entryPort = port;
+        const zipFile =
+          entry.method === 'store'
+            ? new ZipPassThrough(entry.path)
+            : new ZipDeflate(entry.path, { level: entry.level });
+        let bytes = 0;
+        let entrySeq = 0;
+        let creditOutstanding = false;
+        const credit = () => {
+          creditOutstanding = true;
+          port.postMessage({
+            version: 1,
+            batchId,
+            type: 'credit',
+            entryId: entry.entryId,
+            seq: entrySeq,
+            maxBytes: CHUNK,
+          } satisfies EntryControl);
+        };
+        port.onmessageerror = () => fail('entry_message_error');
+        port.onmessage = ({ data: msg }: MessageEvent<EntryData>) => {
+          if (stopped) return;
+          if (msg.type === 'entry-abort') {
+            fail(msg.error.messageKey);
+            return;
+          }
+          if (
+            msg.version !== 1 ||
+            msg.batchId !== batchId ||
+            msg.jobId !== entry.jobId ||
+            msg.entryId !== entry.entryId ||
+            !creditOutstanding ||
+            msg.seq !== entrySeq ||
+            !(msg.chunk.buffer instanceof ArrayBuffer) ||
+            msg.chunk.byteLength !== msg.chunk.buffer.byteLength ||
+            msg.chunk.byteLength > CHUNK ||
+            bytes + msg.chunk.byteLength > entry.maxBytes
+          ) {
+            fail('invalid_entry_chunk');
+            return;
+          }
+          creditOutstanding = false;
+          entrySeq++;
+          bytes += msg.chunk.byteLength;
+          if (msg.final && bytes !== entry.maxBytes) {
+            fail('entry_size_mismatch');
+            return;
+          }
+          try {
+            zipFile.push(new Uint8Array(msg.chunk.buffer), msg.final);
+          } catch {
+            fail('zip_compression_failed');
+            return;
+          }
           if (msg.final) {
-            packedEntriesCount++;
-            emitZipEvent({
+            entries++;
+            port.close();
+            entryPort = null;
+            send({
               version: 1,
-              batchId: currentBatchId!,
+              batchId,
               type: 'entry-packed',
               entryId: entry.entryId,
-              inputBytes: totalEntryBytes,
+              inputBytes: bytes,
             });
-
-            activeEntryPort?.close();
-            activeEntryPort = null;
           } else {
-            entrySeq++;
-            // Grant credit for next slice
-            const creditMsg: EntryControl = {
-              version: 1,
-              batchId: currentBatchId!,
-              type: 'credit',
-              entryId: entry.entryId,
-              seq: entrySeq,
-              maxBytes: CHUNK_SIZE,
-            };
-            entryPort.postMessage(creditMsg);
+            // No producer credit until every callback chunk has reached the sink.
+            grant = credit;
+            flush();
           }
-        } else if (msg.type === 'entry-abort') {
-          activeEntryPort?.close();
-          activeEntryPort = null;
+        };
+        port.start();
+        zip.add(zipFile);
+        grant = credit;
+        flush();
+      } else if (cmd.type === 'finish') {
+        if (entries !== open.expectedEntries || entryPort) {
+          fail('archive_entries_missing');
+          return;
         }
-      };
-
-      entryPort.start();
-
-      // Grant initial credit
-      const initialCredit: EntryControl = {
-        version: 1,
-        batchId: currentBatchId,
-        type: 'credit',
-        entryId: entry.entryId,
-        seq: 0,
-        maxBytes: CHUNK_SIZE,
-      };
-      entryPort.postMessage(initialCredit);
-      break;
-    }
-
-    case 'sink-ack': {
-      // Main thread acknowledges chunk receipt; decrement in-flight bytes
-      inFlightBytes = Math.max(0, inFlightBytes - CHUNK_SIZE);
-      flushBurstQueue();
-      break;
-    }
-
-    case 'finish': {
-      if (currentZip) {
-        currentZip.end();
+        zip.end();
+      } else if (cmd.type === 'abort') {
+        stopped = true;
+        entryPort?.close();
+        queue.length = 0;
       }
-      break;
+    } catch {
+      fail('zip_processing_failed');
     }
-
-    case 'abort': {
-      if (activeEntryPort) {
-        activeEntryPort.close();
-        activeEntryPort = null;
-      }
-      currentZip = null;
-      burstQueue.length = 0;
-      break;
-    }
-  }
+  };
+  send({ version: 1, batchId, type: 'zip-ready' });
 };

@@ -1,15 +1,10 @@
 /// <reference lib="webworker" />
-import type {
-  WorkerCommand,
-  WorkerEvent,
-  EntryData,
-  EntryControl,
-  DocumentPolicy,
-} from '../core/types';
+import type { WorkerCommand, WorkerEvent, DocumentPolicy } from '../core/types';
+import { parseImageMeta } from '../codecs/parser';
 import type { ImageCodecAdapter } from '../codecs/types';
-import { preflightOoxml } from '../codecs/ooxml';
-import { unzipSync, zipSync } from 'fflate';
 
+import { observeJob, streamPrepared } from './jobRuntime';
+import { observeEngineDownloads } from './engineDownloads';
 let isCancelled = false;
 
 function emitWorkerEvent(event: WorkerEvent): void {
@@ -29,6 +24,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
     isCancelled = false;
     const { batchId, jobId, attemptId, source, config, outputPort } = cmd;
     const startTime = performance.now();
+    const observation = observeJob(cmd);
+    const loading = observeEngineDownloads(cmd);
     const sourceSize = source.size;
 
     emitWorkerEvent({
@@ -53,10 +50,16 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         seq: 1,
         stage: 'inspect',
         completed: 0,
-        total: sourceSize,
+        total: null,
         unit: 'bytes',
       });
 
+      observation.status('load', 'Loading Office archive engine');
+      const { preflightOoxml } = await import('../codecs/ooxml');
+      const { unzipSync, zipSync } = await import('fflate');
+      observation.status('read', 'Reading document into reserved memory');
+      if (source.size > config.limits.maxInputBytes)
+        throw new Error('Document exceeds reserved input memory');
       const fullSourceBuffer = await source.arrayBuffer();
       if (isCancelled) throw new Error('Cancelled');
 
@@ -84,8 +87,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           type: 'progress',
           seq: 2,
           stage: 'decode',
-          completed: Math.round(sourceSize * 0.3),
-          total: sourceSize,
+          completed: 0,
+          total: null,
           unit: 'bytes',
         });
 
@@ -101,8 +104,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           type: 'progress',
           seq: 3,
           stage: 'transform',
-          completed: Math.round(sourceSize * 0.5),
-          total: sourceSize,
+          completed: 0,
+          total: null,
           unit: 'bytes',
         });
 
@@ -121,6 +124,14 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             const entryBytes = unzipped[mediaPath];
             if (!entryBytes || entryBytes.byteLength === 0) continue;
 
+            const meta = parseImageMeta(entryBytes.buffer);
+            if (
+              meta.isAnimated ||
+              meta.width <= 0 ||
+              meta.height <= 0 ||
+              2 * entryBytes.byteLength + 20 * meta.width * meta.height > 16 * 1024 * 1024
+            )
+              continue;
             const isPng = /\.png$/i.test(mediaPath);
             const isJpeg = /\.jpe?g$/i.test(mediaPath);
 
@@ -158,9 +169,9 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           attemptId,
           type: 'progress',
           seq: 4,
-          stage: 'pack',
-          completed: Math.round(sourceSize * 0.8),
-          total: sourceSize,
+          stage: 'encode',
+          completed: 0,
+          total: null,
           unit: 'bytes',
         });
 
@@ -186,93 +197,15 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       const outputBytes = finalBuffer.byteLength;
       const durationMs = Math.max(0, Math.round(performance.now() - startTime));
 
-      emitWorkerEvent({
-        version: 1,
-        batchId,
-        jobId,
-        attemptId,
-        type: 'result',
+      loading.ready();
+      streamPrepared(cmd, finalBuffer, {
         disposition,
         outputBytes,
         mime,
         extension,
         durationMs,
       });
-
-      // Stream to outputPort
-      let offset = 0;
-      let seq = 0;
-
-      outputPort.onmessage = (portEvent: MessageEvent<EntryControl>) => {
-        const ctrl = portEvent.data;
-        if (!ctrl || ctrl.version !== 1) return;
-
-        if (ctrl.type === 'credit') {
-          if (isCancelled) {
-            outputPort.postMessage({
-              version: 1,
-              batchId,
-              jobId,
-              attemptId,
-              type: 'entry-abort',
-              entryId: ctrl.entryId,
-              error: {
-                code: 'CANCELLED',
-                retryable: false,
-                messageKey: 'job_cancelled',
-              },
-            });
-            outputPort.close();
-            return;
-          }
-
-          const maxBytes = ctrl.maxBytes || 256 * 1024;
-          const sliceLength = Math.min(outputBytes - offset, maxBytes);
-          const isFinal = offset + sliceLength >= outputBytes;
-
-          const sliceBuffer = finalBuffer.slice(offset, offset + sliceLength);
-
-          const entryChunk: EntryData = {
-            version: 1,
-            batchId,
-            jobId,
-            attemptId,
-            type: 'entry-chunk',
-            entryId: ctrl.entryId,
-            seq,
-            chunk: {
-              buffer: sliceBuffer,
-              byteLength: sliceBuffer.byteLength,
-            },
-            final: isFinal,
-          };
-
-          outputPort.postMessage(entryChunk, [sliceBuffer]);
-
-          offset += sliceLength;
-          seq++;
-
-          emitWorkerEvent({
-            version: 1,
-            batchId,
-            jobId,
-            attemptId,
-            type: 'progress',
-            seq,
-            stage: 'pack',
-            completed: offset,
-            total: outputBytes,
-            unit: 'bytes',
-          });
-
-          if (isFinal) {
-            outputPort.close();
-          }
-        }
-      };
-
-      outputPort.start();
-    } catch {
+    } catch (error) {
       emitWorkerEvent({
         version: 1,
         batchId,
@@ -282,10 +215,17 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         error: {
           code: isCancelled ? 'CANCELLED' : 'INTERNAL',
           retryable: false,
+          details:
+            error instanceof Error
+              ? `${error.message}\n${error.stack ?? ''}`.slice(0, 1800)
+              : 'Unknown worker error',
           messageKey: isCancelled ? 'job_cancelled' : 'office_processing_failed',
         },
       });
       outputPort.close();
+    } finally {
+      observation.stop();
+      loading.restore();
     }
   }
 };

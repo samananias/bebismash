@@ -2,14 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSmashStore } from './useSmashStore';
 import type { BatchResult } from '../services/scheduler';
 
-const mocks = vi.hoisted(() => ({ processBatch: vi.fn(), cancel: vi.fn(), submit: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  processBatch: vi.fn(),
+  cancel: vi.fn(),
+  submit: vi.fn(),
+  subscribe: vi.fn(),
+  unsubscribe: vi.fn(),
+}));
 vi.mock('../services/scheduler', () => ({
-  scheduler: { processBatch: mocks.processBatch, cancel: mocks.cancel },
+  scheduler: { processBatch: mocks.processBatch, cancel: mocks.cancel, subscribe: mocks.subscribe },
 }));
 vi.mock('../services/telemetry', () => ({ submitTelemetryBatch: mocks.submit }));
 const file = () => new File(['content'], 'local.txt', { type: 'text/plain' });
 const result = (): BatchResult => ({
   batchId: 'batch-test',
+  packaging: 'file',
   totalFiles: 1,
   archive: { name: 'test.zip', bytes: 120, kind: 'blob', url: 'blob:test' },
   results: [
@@ -33,6 +40,7 @@ describe('Monoterm batch state', () => {
     useSmashStore.getState().setIntensity('balanced');
     vi.clearAllMocks();
     mocks.cancel.mockResolvedValue(undefined);
+    mocks.subscribe.mockReturnValue(mocks.unsubscribe);
   });
   afterEach(() => {
     useSmashStore.setState({ phase: 'idle' });
@@ -92,7 +100,12 @@ describe('Monoterm batch state', () => {
     expect(useSmashStore.getState().errorMessage).toBeNull();
     mocks.processBatch.mockResolvedValueOnce(result());
     await useSmashStore.getState().startSmash();
-    expect(mocks.processBatch).toHaveBeenLastCalledWith([source], 'balanced');
+    expect(mocks.processBatch).toHaveBeenLastCalledWith(
+      [source],
+      'balanced',
+      undefined,
+      useSmashStore.getState().order
+    );
     expect(useSmashStore.getState().phase).toBe('complete');
   });
   it('revokes a stale completion URL after cancellation', async () => {

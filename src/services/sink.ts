@@ -8,7 +8,7 @@ export interface ArchiveSinkResult {
 }
 
 export interface IArchiveSink {
-  open(filename: string): Promise<void>;
+  open(filename: string, mime?: string): Promise<void>;
   write(chunk: OwnedChunk): Promise<void>;
   close(): Promise<ArchiveSinkResult>;
   abort(): Promise<void>;
@@ -22,13 +22,15 @@ export class BlobArchiveSink implements IArchiveSink {
   private chunks: ArrayBuffer[] = [];
   private totalBytes = 0;
   private filename = 'BebiSmash_archive.zip';
+  private mime = 'application/zip';
   private objectUrl: string | null = null;
   private revokeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private maxBytes: number) {}
 
-  async open(filename: string): Promise<void> {
+  async open(filename: string, mime = 'application/zip'): Promise<void> {
     this.filename = filename;
+    this.mime = mime;
     this.chunks = [];
     this.totalBytes = 0;
     this.cleanupUrl();
@@ -43,7 +45,7 @@ export class BlobArchiveSink implements IArchiveSink {
   }
 
   async close(): Promise<ArchiveSinkResult> {
-    const blob = new Blob(this.chunks, { type: 'application/zip' });
+    const blob = new Blob(this.chunks, { type: this.mime });
     this.chunks = []; // release array references
     this.objectUrl = URL.createObjectURL(blob);
 

@@ -1,8 +1,11 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, lazy, Suspense } from 'react';
 import type { DragEvent } from 'react';
 import type { Intensity } from './core/types';
 import { useSmashStore } from './store/useSmashStore';
 import { TelemetryBadge } from './components/TelemetryBadge';
+const JobStatus = lazy(() =>
+  import('./components/JobStatus').then((module) => ({ default: module.JobStatus }))
+);
 import { PixelArt } from './components/PixelArt';
 
 function formatBytes(bytes: number) {
@@ -51,6 +54,8 @@ export default function App() {
     'finalizing',
     'cancelling',
   ].includes(phase);
+  const singleFile = order.length === 1;
+  const outputLabel = singleFile ? 'file' : 'ZIP';
   const complete = phase === 'complete';
   const editable = !busy && !complete;
   const drop = (event: DragEvent<HTMLElement>) => {
@@ -68,7 +73,7 @@ export default function App() {
           : phase === 'failed'
             ? 'Batch stopped. Review the error below and retry.'
             : complete
-              ? 'Your archive is ready.'
+              ? singleFile ? 'Your file is ready.' : 'Your archive is ready.'
               : order.length
                 ? `${order.length} ${order.length === 1 ? 'file' : 'files'} ready to smash.`
                 : 'Ready when you are.';
@@ -176,6 +181,37 @@ export default function App() {
                 ? 'Smaller files. More visible tradeoffs.'
                 : 'A happy medium of quality and size.'}
           </p>
+          {!busy && !complete && order.length > 0 && 'showSaveFilePicker' in window && (
+            <button
+              className="text-button"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const handle = await (
+                      window as unknown as {
+                        showSaveFilePicker: (options: unknown) => Promise<FileSystemFileHandle>;
+                      }
+                    ).showSaveFilePicker({
+                      suggestedName: singleFile ? files[order[0]!]!.name : 'BebiSmash.zip',
+                      ...(singleFile ? {} : { types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }] }),
+                    });
+                    const { FileSystemArchiveSink } = await import('./services/sink');
+                    await startSmash(new FileSystemArchiveSink(handle));
+                  } catch (error) {
+                    if (!(error instanceof DOMException && error.name === 'AbortError'))
+                      useSmashStore.setState({
+                        errorMessage:
+                          error instanceof Error
+                            ? error.message
+                            : 'Could not open local output file',
+                      });
+                  }
+                })();
+              }}
+            >
+              Save {outputLabel} to disk
+            </button>
+          )}
           {complete ? (
             <button className="pixel-button" onClick={reset}>
               New batch <span aria-hidden="true">↻</span>
@@ -194,7 +230,7 @@ export default function App() {
               disabled={!order.length}
               onClick={() => void startSmash()}
             >
-              {phase === 'failed' || phase === 'cancelled' ? 'Retry batch' : 'Smash into ZIP'}{' '}
+              {phase === 'failed' || phase === 'cancelled' ? 'Retry batch' : singleFile ? 'Compress file' : 'Smash into ZIP'}{' '}
               <span aria-hidden="true">→</span>
             </button>
           )}
@@ -265,38 +301,21 @@ export default function App() {
                           <span className="saving">{reduction ? `−${reduction}%` : 'PACKED'}</span>
                         )}
                       </div>
-                      <div
-                        className={`block-progress ${busy ? 'processing' : ''}`}
-                        role="progressbar"
-                        aria-label={`${file.name} batch status`}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={busy ? undefined : packed ? 100 : 0}
-                        aria-valuetext={
-                          busy
-                            ? 'Processing; progress unavailable'
-                            : packed
-                              ? 'Packed'
-                              : file.status
-                        }
+                      <Suspense
+                        fallback={<p className="file-caption">Preparing status details…</p>}
                       >
-                        {Array.from({ length: 20 }, (_, i) => (
-                          <span key={i} className={packed ? 'filled' : ''} />
-                        ))}
-                      </div>
-                      <p className="file-caption">
-                        {packed
-                          ? reduction
-                            ? 'PACKED · SMALLER OUTPUT'
-                            : 'PACKED · ORIGINAL SIZE'
-                          : busy
-                            ? 'PROCESSING LOCALLY'
-                            : file.status === 'cancelled'
-                              ? 'CANCELLED · READY TO RETRY'
-                              : file.status === 'failed'
-                                ? 'STOPPED · READY TO RETRY'
-                                : 'QUEUED · KEPT ON YOUR DEVICE'}
-                      </p>
+                        <JobStatus
+                          file={file}
+                          batchComplete={complete}
+                          singleFile={singleFile}
+                          retry={() => {
+                            void (async () => {
+                              await cancelSmash();
+                              await startSmash();
+                            })();
+                          }}
+                        />
+                      </Suspense>
                     </div>
                   </li>
                 );
@@ -322,15 +341,15 @@ export default function App() {
                 {savings !== null
                   ? savings > 0
                     ? `${formatBytes(savings)} less to carry.`
-                    : 'Your files, neatly packaged.'
+                    : singleFile ? 'Your file is ready.' : 'Your files, neatly packaged.'
                   : order.length
                     ? `${formatBytes(queuedBytes)} in your queue.`
                     : 'Make a little room.'}
               </strong>
               <p>
                 {download?.ready
-                  ? `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
-                  : 'Actual savings appear when your archive is ready.'}
+                  ? download.packaging === 'file' ? `${formatBytes(download.bytes)} · ${download.name}` : `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
+                  : singleFile ? 'Actual savings appear when your file is ready.' : 'Actual savings appear when your archive is ready.'}
               </p>
             </div>
           </div>
@@ -340,11 +359,11 @@ export default function App() {
               href={download.url}
               download={download.name}
             >
-              Download ZIP <span aria-hidden="true">↓</span>
+              Download {outputLabel} <span aria-hidden="true">↓</span>
             </a>
           ) : (
             <button className="pixel-button primary download-button" disabled>
-              {download?.kind === 'disk' ? 'Saved to disk' : 'Download ZIP'}{' '}
+              {download?.kind === 'disk' ? 'Saved to disk' : `Download ${outputLabel}`}{' '}
               <span aria-hidden="true">↓</span>
             </button>
           )}

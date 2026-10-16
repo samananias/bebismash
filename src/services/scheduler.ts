@@ -6,14 +6,15 @@ import type {
   ZipEvent,
   ZipCommand,
   WorkerCommand,
+  Stage,
 } from '../core/types';
 import { detectHardwareProfile } from '../core/hardware';
 import { sniffFile, decideRoute, createEnginePolicy } from '../core/sniff';
 import type { IArchiveSink, ArchiveSinkResult } from './sink';
 import { BlobArchiveSink } from './sink';
+import { writeDirectOutput } from './directOutput';
 
 export type SchedulerEventListener = (event: WorkerEvent | ZipEvent) => void;
-
 export interface CompletedFileResult {
   extension: string;
   category: 'image' | 'video' | 'document' | 'archive' | 'other';
@@ -23,326 +24,536 @@ export interface CompletedFileResult {
   durationMs: number;
   deviceTier: 'constrained' | 'standard' | 'high';
 }
-
 export interface BatchResult {
   batchId: BatchId;
+  packaging: 'file' | 'zip';
   archive: ArchiveSinkResult;
   totalFiles: number;
   results: CompletedFileResult[];
 }
 
+/** Sequential admission keeps one candidate and one credited ZIP entry alive at a time. */
 export class BatchScheduler {
   private profile: HardwareProfile;
   private listeners = new Set<SchedulerEventListener>();
-  private activeZipWorker: Worker | null = null;
-  private activeWorkers = new Set<Worker>();
   private currentAbortController: AbortController | null = null;
-  private isProcessing = false;
-
+  private pending: Promise<BatchResult> | null = null;
   constructor() {
     this.profile = detectHardwareProfile();
   }
-
-  getHardwareProfile(): HardwareProfile {
+  getHardwareProfile() {
     return this.profile;
   }
-
-  subscribe(listener: SchedulerEventListener): () => void {
+  subscribe(listener: SchedulerEventListener) {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
   }
-
-  protected emit(event: WorkerEvent | ZipEvent): void {
-    for (const listener of this.listeners) {
-      listener(event);
-    }
+  protected emit(event: WorkerEvent | ZipEvent) {
+    for (const listener of this.listeners) listener(event);
   }
-
-  async processBatch(
+  processBatch(
     files: File[],
     intensity: Intensity,
-    customSink?: IArchiveSink
+    customSink?: IArchiveSink,
+    jobIds?: string[]
   ): Promise<BatchResult> {
-    if (this.isProcessing) {
-      throw new Error('A batch is already in progress');
-    }
-    if (files.length === 0) {
-      throw new Error('Cannot process empty file list');
-    }
-
-    this.isProcessing = true;
-    const batchId: BatchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    this.currentAbortController = new AbortController();
-    const abortSignal = this.currentAbortController.signal;
-
-    // Use provided sink or default to bounded BlobArchiveSink
-    const sink: IArchiveSink = customSink || new BlobArchiveSink(this.profile.blobLimitBytes);
-
-    const archiveName = `BebiSmash_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-    await sink.open(archiveName);
-
-    return new Promise<BatchResult>((resolve, reject) => {
-      let isResolved = false;
-
-      const cleanup = async () => {
-        this.isProcessing = false;
-        if (this.activeZipWorker) {
-          this.activeZipWorker.terminate();
-          this.activeZipWorker = null;
+    if (this.pending) return Promise.reject(new Error('A batch is already in progress'));
+    if (!files.length || files.length > 1000)
+      return Promise.reject(new Error('Choose between 1 and 1,000 files.'));
+    const controller = new AbortController();
+    this.currentAbortController = controller;
+    const pending = this.run(files, intensity, customSink, jobIds, controller.signal).finally(
+      () => {
+        if (this.pending === pending) {
+          this.pending = null;
+          this.currentAbortController = null;
         }
-        for (const worker of this.activeWorkers) {
-          worker.terminate();
-        }
-        this.activeWorkers.clear();
-      };
-
-      const fail = async (err: Error) => {
-        if (isResolved) return;
-        isResolved = true;
-        await sink.abort();
-        await cleanup();
-        reject(err);
-      };
-
-      abortSignal.addEventListener('abort', () => {
-        fail(new Error('Batch processing was cancelled'));
-      });
-
-      try {
-        // Instantiate ZIP bundler worker
-        const zipWorker = new Worker(new URL('../workers/zip.worker.ts', import.meta.url), {
-          type: 'module',
-        });
-        this.activeZipWorker = zipWorker;
-
-        zipWorker.onmessage = async (e: MessageEvent<ZipEvent>) => {
-          const event = e.data;
-          this.emit(event);
-
-          if (event.type === 'zip-chunk') {
-            try {
-              await sink.write(event.chunk);
-              // Send sink-ack backpressure acknowledgement
-              const ack: ZipCommand = {
-                version: 1,
-                batchId,
-                type: 'sink-ack',
-                seq: event.seq,
-              };
-              zipWorker.postMessage(ack);
-            } catch (writeErr) {
-              await fail(writeErr as Error);
-            }
-          } else if (event.type === 'zip-complete') {
-            if (isResolved) return;
-            isResolved = true;
-            try {
-              const archiveResult = await sink.close();
-              await cleanup();
-              resolve({
-                batchId,
-                archive: archiveResult,
-                totalFiles: files.length,
-                results: completedResults,
-              });
-            } catch (closeErr) {
-              await fail(closeErr as Error);
-            }
-          } else if (event.type === 'zip-error') {
-            await fail(new Error(`Zip worker error: ${event.error.code}`));
-          }
-        };
-
-        // Open zip worker
-        const openCmd: ZipCommand = {
-          version: 1,
-          batchId,
-          type: 'open',
-          maxArchiveBytes: this.profile.blobLimitBytes,
-          expectedEntries: files.length,
-        };
-        zipWorker.postMessage(openCmd);
-
-        const completedResults: CompletedFileResult[] = [];
-
-        // Process files sequentially or up to maxWorkers concurrency
-        (async () => {
-          for (let i = 0; i < files.length; i++) {
-            if (abortSignal.aborted) return;
-            const file = files[i]!;
-            const jobId = `job-${i}-${Math.random().toString(36).slice(2, 8)}`;
-            const attemptId = `att-1`;
-            const entryId = `entry-${i}`;
-
-            const sniffResult = await sniffFile(file);
-            const route = decideRoute(sniffResult, file.size, intensity);
-            const policy = createEnginePolicy(route.engine, route.format, intensity);
-
-            // Channel between Job Worker and Zip Worker
-            const channel = new MessageChannel();
-
-            const isAlreadyCompressed =
-              route.format === 'zip' ||
-              route.format === 'jpeg' ||
-              route.format === 'png' ||
-              route.format === 'webp' ||
-              route.format === 'avif' ||
-              route.format === 'docx' ||
-              route.format === 'pptx' ||
-              route.format === 'xlsx' ||
-              route.format === 'pdf' ||
-              route.format === 'mp4' ||
-              route.format === 'mov' ||
-              route.format === 'webm';
-
-            // Register entry with ZIP worker
-            const addCmd: ZipCommand = {
-              version: 1,
-              batchId,
-              type: 'add',
-              entry: {
-                entryId,
-                jobId,
-                path: file.name,
-                method: isAlreadyCompressed ? 'store' : 'deflate',
-                level: intensity === 'heavy' ? 9 : intensity === 'balanced' ? 6 : 4,
-                maxBytes: file.size,
-              },
-              entryPort: channel.port1,
-            };
-            zipWorker.postMessage(addCmd, [channel.port1]);
-
-            // Keep each URL inside its Worker constructor so Vite compiles the worker graph.
-            let jobWorker: Worker;
-            if (route.engine === 'image') {
-              jobWorker = new Worker(new URL('../workers/image.worker.ts', import.meta.url), {
-                type: 'module',
-              });
-            } else if (route.format === 'pdf') {
-              jobWorker = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
-                type: 'module',
-              });
-            } else if (
-              route.engine === 'officePdf' &&
-              (route.format === 'docx' || route.format === 'pptx' || route.format === 'xlsx')
-            ) {
-              jobWorker = new Worker(new URL('../workers/office.worker.ts', import.meta.url), {
-                type: 'module',
-              });
-            } else if (route.engine === 'video') {
-              jobWorker = new Worker(new URL('../workers/video.worker.ts', import.meta.url), {
-                type: 'module',
-              });
-            } else {
-              jobWorker = new Worker(new URL('../workers/generic.worker.ts', import.meta.url), {
-                type: 'module',
-              });
-            }
-
-            this.activeWorkers.add(jobWorker);
-
-            await new Promise<void>((jobResolve, jobReject) => {
-              jobWorker.onmessage = (workerMsg: MessageEvent<WorkerEvent>) => {
-                const wEvent = workerMsg.data;
-                this.emit(wEvent);
-
-                if (wEvent.type === 'result') {
-                  const rawExt = file.name.split('.').pop()?.toLowerCase() || 'other';
-                  const category =
-                    route.engine === 'video'
-                      ? 'video'
-                      : route.engine === 'image'
-                        ? 'image'
-                        : route.format === 'zip'
-                          ? 'archive'
-                          : route.engine === 'generic' || route.format === 'unknown'
-                            ? 'other'
-                            : 'document';
-
-                  completedResults.push({
-                    extension: rawExt,
-                    category,
-                    intensity,
-                    originalBytes: file.size,
-                    compressedBytes: wEvent.outputBytes,
-                    durationMs: wEvent.durationMs,
-                    deviceTier: this.profile.tier,
-                  });
-
-                  jobWorker.terminate();
-                  this.activeWorkers.delete(jobWorker);
-                  jobResolve();
-                } else if (wEvent.type === 'error') {
-                  jobWorker.terminate();
-                  this.activeWorkers.delete(jobWorker);
-                  jobReject(new Error(wEvent.error.code));
-                }
-              };
-
-              const maxPixels =
-                this.profile.tier === 'constrained'
-                  ? 12_000_000
-                  : this.profile.tier === 'standard'
-                    ? 24_000_000
-                    : 48_000_000;
-
-              const startCmd: WorkerCommand = {
-                version: 1,
-                batchId,
-                jobId,
-                attemptId,
-                type: 'start',
-                source: file,
-                sourceMode: 'worker-ranges',
-                config: {
-                  engine: route.engine,
-                  format: route.format,
-                  intensity,
-                  policy,
-                  limits: {
-                    maxInputBytes: 2 * 1024 * 1024 * 1024,
-                    maxOutputBytes: this.profile.blobLimitBytes,
-                    maxPixels,
-                    maxExpandedBytes: 200 * 1024 * 1024,
-                    maxEntryBytes: 100 * 1024 * 1024,
-                    maxEntries: 1000,
-                    maxExpansionRatio: 100,
-                    maxWallTimeMs: 60_000,
-                  },
-                  allowMultithreadedWasm: false,
-                },
-                outputPort: channel.port2,
-              };
-
-              jobWorker.postMessage(startCmd, [channel.port2]);
-            });
-          }
-
-          // Finish archive once all entries are fed
-          if (!abortSignal.aborted && this.activeZipWorker) {
-            const finishCmd: ZipCommand = {
-              version: 1,
-              batchId,
-              type: 'finish',
-            };
-            this.activeZipWorker.postMessage(finishCmd);
-          }
-        })().catch(fail);
-      } catch (err) {
-        fail(err as Error);
       }
-    });
+    );
+    this.pending = pending;
+    return pending;
   }
-
-  async cancel(): Promise<void> {
-    if (this.currentAbortController) {
-      this.currentAbortController.abort();
-      this.currentAbortController = null;
+  private async run(
+    files: File[],
+    intensity: Intensity,
+    customSink: IArchiveSink | undefined,
+    jobIds: string[] | undefined,
+    signal: AbortSignal
+  ): Promise<BatchResult> {
+    const batchId = crypto.randomUUID();
+    const single = files.length === 1;
+    const sink = customSink ?? new BlobArchiveSink(this.profile.blobLimitBytes);
+    const workers = new Set<Worker>();
+    const ports = new Set<MessagePort>();
+    const completedResults: CompletedFileResult[] = [];
+    let fail!: (error: Error) => void;
+    const failure = new Promise<never>((_, reject) => {
+      fail = reject;
+    });
+    // Observe immediately: failures can arrive between sequential awaits.
+    void failure.catch(() => {});
+    const race = <T>(work: Promise<T>) => Promise.race([work, failure]);
+    const cancel = () => {
+      for (const worker of workers) worker.terminate();
+      for (const port of ports) port.close();
+      fail(new Error('Batch processing was cancelled'));
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let lastContact = Date.now();
+    let jobDeadline = Date.now() + 30_000;
+    let stage: Stage = 'start';
+    let jobLabel = 'ZIP worker';
+    let retainedBytes = 0;
+    const addWorker = (worker: Worker) => {
+      workers.add(worker);
+      worker.onerror = (event) => {
+        event.preventDefault();
+        fail(
+          new Error(
+            `${jobLabel}: worker failed to load or crashed. ${event.message || 'Check engine assets and browser memory.'}`
+          )
+        );
+      };
+      worker.onmessageerror = () =>
+        fail(new Error(`${jobLabel}: worker message could not be decoded.`));
+      return worker;
+    };
+    try {
+      if (signal.aborted) throw new Error('Batch processing was cancelled');
+      const opening = single ? Promise.resolve() : sink.open(`BebiSmash_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`);
+      void opening
+        .then(() => {
+          if (signal.aborted) return sink.abort();
+        })
+        .catch(() => {});
+      await race(opening);
+      timer = setInterval(() => {
+        const now = Date.now();
+        if (now > jobDeadline)
+          fail(new Error(`${jobLabel}: ${stage} exceeded its execution deadline.`));
+        else if (stage === 'start' && now - lastContact > 30_000)
+          fail(new Error(`${jobLabel}: worker initialization timed out after 30 seconds.`));
+      }, 1000);
+      const zipWorker = single ? null : addWorker(
+        new Worker(new URL('../workers/zip.worker.ts', import.meta.url), { type: 'module' })
+      );
+      let ready!: () => void;
+      const zipReady = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      let done!: () => void;
+      const zipDone = new Promise<void>((resolve) => {
+        done = resolve;
+      });
+      let packed: (() => void) | undefined;
+      let expectedEntry: string | undefined;
+      let writeChain = Promise.resolve();
+      let expectedSeq = 1;
+      if (zipWorker) {
+      zipWorker.onmessage = ({ data: event }: MessageEvent<ZipEvent>) => {
+        if (!event || typeof event !== 'object') {
+          fail(new Error('Invalid ZIP worker message'));
+          return;
+        }
+        if (signal.aborted || event.batchId !== batchId) return;
+        if (event.version !== 1) {
+          fail(new Error('ZIP protocol version mismatch'));
+          return;
+        }
+        lastContact = Date.now();
+        if (event.type === 'zip-chunk') {
+          if (
+            event.seq !== expectedSeq++ ||
+            !(event.chunk.buffer instanceof ArrayBuffer) ||
+            event.chunk.byteLength !== event.chunk.buffer.byteLength ||
+            event.chunk.byteLength > 256 * 1024
+          ) {
+            fail(new Error('Invalid ZIP chunk or sequence'));
+            return;
+          }
+          writeChain = writeChain.then(async () => {
+            if (signal.aborted) return;
+            await sink.write(event.chunk);
+            retainedBytes += customSink ? 0 : event.chunk.byteLength;
+            zipWorker.postMessage({
+              version: 1,
+              batchId,
+              type: 'sink-ack',
+              seq: event.seq,
+            } satisfies ZipCommand);
+          });
+          void writeChain.catch((error: Error) => fail(error));
+        } else if (event.type === 'zip-ready') ready();
+        else if (event.type === 'entry-packed' && event.entryId === expectedEntry) packed?.();
+        else if (event.type === 'zip-complete') done();
+        else if (event.type === 'zip-error')
+          fail(new Error(`ZIP: ${event.error.code} (${event.error.messageKey})`));
+        this.emit(event);
+      };
+      zipWorker.postMessage({
+        version: 1,
+        batchId,
+        type: 'open',
+        maxArchiveBytes: customSink ? 2 ** 31 - 1 : this.profile.blobLimitBytes,
+        expectedEntries: files.length,
+      } satisfies ZipCommand);
+      await race(zipReady);
+      }
+      const names = new Set<string>();
+      for (let i = 0; i < files.length; i++) {
+        if (signal.aborted) throw new Error('Batch processing was cancelled');
+        const file = files[i]!;
+        const ids = {
+          version: 1 as const,
+          batchId,
+          jobId: jobIds?.[i] ?? crypto.randomUUID(),
+          attemptId: crypto.randomUUID(),
+        };
+        const status = (
+          nextStage: Stage,
+          detail: string,
+          engine?: string,
+          reservedBytes?: number
+        ) => {
+          stage = nextStage;
+          this.emit({
+            ...ids,
+            type: 'status',
+            stage: nextStage,
+            detail,
+            ...(engine ? { engine } : {}),
+            ...(reservedBytes !== undefined ? { reservedBytes } : {}),
+          });
+        };
+        jobLabel = file.name;
+        jobDeadline = Date.now() + 30_000;
+        status('inspect', 'Checking file signature and memory budget');
+        if (file.size >= 2 ** 31) throw new Error('File exceeds the ZIP32 input limit.');
+        const sniff = await race(sniffFile(file));
+        const route = decideRoute(sniff, file.size, intensity);
+        const overhead = 32 * 1024 * 1024;
+        // Video currently stages full input and output; account for those copies explicitly.
+        if (route.engine === 'video') route.reservationBytes += 4 * file.size;
+        const available = this.profile.memoryBudgetBytes - overhead - 2 * retainedBytes;
+        const originalOnly =
+          route.reservationBytes > available ||
+          (route.engine === 'video' && file.size > this.profile.blobLimitBytes);
+        if (!customSink && file.size + retainedBytes + (single ? 0 : 256 * 1024) > this.profile.blobLimitBytes) {
+          throw new Error(
+            `This file cannot safely fit the browser archive limit (${Math.floor(this.profile.blobLimitBytes / 1024 / 1024)} MiB). Use a smaller batch or Save ${single ? 'file' : 'ZIP'} to disk.`
+          );
+        }
+        if (originalOnly && available < 17 * 1024 * 1024)
+          throw new Error(
+            `Insufficient working memory for this batch. Use fewer files or Save ${single ? 'file' : 'ZIP'} to disk.`
+          );
+        const generic = originalOnly || route.engine === 'generic';
+        const engine = originalOnly
+          ? 'Original file · memory safeguard'
+          : route.engine === 'video'
+            ? 'Mediabunny / WebCodecs'
+            : route.engine === 'image'
+              ? `jSquash ${route.format}`
+              : route.engine === 'officePdf'
+                ? route.format === 'pdf'
+                  ? 'pdf-lib'
+                  : 'OOXML / jSquash'
+                : 'File streaming / fflate';
+        status(
+          'start',
+          originalOnly
+            ? 'Transform exceeds memory budget; packaging original without compression'
+            : 'Starting processing worker',
+          engine,
+          originalOnly ? 17 * 1024 * 1024 : route.reservationBytes
+        );
+        let worker: Worker;
+        if (generic)
+          worker = new Worker(new URL('../workers/generic.worker.ts', import.meta.url), {
+            type: 'module',
+          });
+        else if (route.engine === 'image')
+          worker = new Worker(new URL('../workers/image.worker.ts', import.meta.url), {
+            type: 'module',
+          });
+        else if (route.engine === 'video')
+          worker = new Worker(new URL('../workers/video.worker.ts', import.meta.url), {
+            type: 'module',
+          });
+        else if (route.format === 'pdf')
+          worker = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
+            type: 'module',
+          });
+        else
+          worker = new Worker(new URL('../workers/office.worker.ts', import.meta.url), {
+            type: 'module',
+          });
+        addWorker(worker);
+        lastContact = Date.now();
+        jobDeadline =
+          Date.now() +
+          (route.engine === 'video' && !generic
+            ? 600_000
+            : generic
+              ? 600_000
+              : route.engine === 'image'
+                ? 30_000
+                : 60_000);
+        const channel = new MessageChannel();
+        ports.add(channel.port1);
+        const entryId = ids.jobId;
+        expectedEntry = entryId;
+        const entryDone = new Promise<void>((resolve) => {
+          packed = resolve;
+        });
+        let resultReceived = false;
+        const progressSequence = new Map<Stage, number>();
+        worker.onmessage = ({ data: event }: MessageEvent<WorkerEvent>) => {
+          if (!event || typeof event !== 'object') {
+            fail(new Error('Invalid worker message'));
+            return;
+          }
+          if (
+            signal.aborted ||
+            event.batchId !== batchId ||
+            event.jobId !== ids.jobId ||
+            event.attemptId !== ids.attemptId
+          )
+            return;
+          if (event.version !== 1) {
+            fail(new Error('Worker protocol version mismatch'));
+            return;
+          }
+          if (
+            ![
+              'status',
+              'progress',
+              'heartbeat',
+              'asset',
+              'ready',
+              'input-credit',
+              'result',
+              'error',
+            ].includes(event.type)
+          ) {
+            fail(new Error('Unknown worker event'));
+            return;
+          }
+          if (event.type !== 'result' && JSON.stringify(event).length > 4096) {
+            fail(new Error('Worker metadata exceeds limit'));
+            return;
+          }
+          if (event.type === 'status' || event.type === 'progress') {
+            if (
+              ![
+                'inspect',
+                'load',
+                'init',
+                'start',
+                'read',
+                'decode',
+                'transform',
+                'encode',
+                'output',
+                'pack',
+                'save',
+              ].includes(event.stage)
+            ) {
+              fail(new Error('Unknown processing stage'));
+              return;
+            }
+          }
+          if (event.type === 'progress') {
+            if (
+              !Number.isSafeInteger(event.seq) ||
+              event.seq <= (progressSequence.get(event.stage) ?? -1) ||
+              !Number.isFinite(event.completed) ||
+              event.completed < 0 ||
+              (event.total !== null &&
+                (!Number.isFinite(event.total) || event.total < event.completed))
+            ) {
+              fail(new Error('Invalid progress metrics'));
+              return;
+            }
+            progressSequence.set(event.stage, event.seq);
+          }
+          lastContact = Date.now();
+          if (event.type === 'status' || event.type === 'progress') stage = event.stage;
+          if (event.type === 'ready') stage = 'inspect';
+          if (event.type === 'error') {
+            fail(
+              new Error(
+                `${engine}: ${event.error.code} (${event.error.messageKey})${event.error.details ? `\n${event.error.details}` : ''}`
+              )
+            );
+          } else if (event.type === 'result') {
+            if (
+              resultReceived ||
+              !Number.isSafeInteger(event.outputBytes) ||
+              event.outputBytes < 0 ||
+              event.outputBytes > file.size
+            ) {
+              fail(new Error('Invalid or duplicate worker result'));
+              return;
+            }
+            resultReceived = true;
+            completedResults.push({
+              extension: file.name.split('.').pop()?.toLowerCase() ?? 'other',
+              category: route.category,
+              intensity,
+              originalBytes: file.size,
+              compressedBytes: event.outputBytes,
+              durationMs: event.durationMs,
+              deviceTier: this.profile.tier,
+            });
+            // Filename controls must be removed before archive extraction.
+            // eslint-disable-next-line no-control-regex
+            const unsafeName = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069:]/g;
+            let base = file.name
+              .normalize('NFC')
+              .replace(/^.*[\\/]/, '')
+              .replace(unsafeName, '_');
+            while (new TextEncoder().encode(base).length > 96)
+              base = Array.from(base).slice(0, -1).join('');
+            base ||= 'file';
+            if (base === '.' || base === '..') base = 'file';
+            if (event.disposition === 'transformed')
+              base =
+                base.replace(/\.[^.]*$/, '') +
+                '.' +
+                event.extension.replace(/[^a-z0-9]/gi, '').slice(0, 8);
+            let name = base;
+            for (let suffix = 2; names.has(name); suffix++) name = `${base} (${suffix})`;
+            names.add(name);
+            stage = 'pack';
+            if (zipWorker) zipWorker.postMessage(
+              {
+                version: 1,
+                batchId,
+                type: 'add',
+                entry: {
+                  entryId,
+                  jobId: ids.jobId,
+                  path: name,
+                  method: route.format === 'unknown' ? 'deflate' : 'store',
+                  level: intensity === 'heavy' ? 9 : intensity === 'balanced' ? 6 : 4,
+                  maxBytes: event.outputBytes,
+                },
+                entryPort: channel.port1,
+              } satisfies ZipCommand,
+              [channel.port1]
+            );
+            if (single) {
+              let progressSeq = 0;
+              const saving = (async () => {
+                await sink.open(name, event.mime);
+                if (signal.aborted) { await sink.abort(); throw new Error('File save was cancelled'); }
+                await writeDirectOutput(channel.port1, ids, event.outputBytes, sink, signal, (completed) => {
+                  this.emit({ ...ids, type: 'progress', seq: ++progressSeq, stage: 'save', completed, total: event.outputBytes, unit: 'bytes' });
+                });
+              })();
+              void saving.then(() => packed?.()).catch((error: Error) => fail(error));
+            } else ports.delete(channel.port1);
+          }
+          if (single && event.type === 'progress' && event.stage === 'pack') return;
+          if (single && event.type === 'status' && event.stage === 'output') this.emit({ ...event, detail: 'Output prepared for direct save' });
+          else this.emit(event);
+        };
+        const maxPixels =
+          this.profile.tier === 'constrained'
+            ? 12_000_000
+            : this.profile.tier === 'standard'
+              ? 24_000_000
+              : 48_000_000;
+        worker.postMessage(
+          {
+            ...ids,
+            type: 'start',
+            source: file,
+            sourceMode: 'worker-ranges',
+            config: {
+              engine: generic ? 'generic' : route.engine,
+              format: route.format,
+              intensity,
+              policy: createEnginePolicy(
+                generic ? 'generic' : route.engine,
+                route.format,
+                intensity
+              ),
+              limits: {
+                maxInputBytes: Math.min(file.size, Math.floor(available / 6)),
+                maxOutputBytes: Math.min(file.size, this.profile.blobLimitBytes),
+                maxPixels: Math.min(
+                  maxPixels,
+                  Math.max(
+                    0,
+                    Math.floor(
+                      (available -
+                        (route.engine === 'video'
+                          ? 4 * file.size + 128 * 1024 * 1024
+                          : 2 * file.size + overhead)) /
+                        (route.engine === 'video' ? 32 : 20)
+                    )
+                  )
+                ),
+                maxExpandedBytes: Math.min(file.size * 5, 64 * 1024 * 1024),
+                maxEntryBytes:
+                  this.profile.tier === 'constrained' ? 16 * 1024 * 1024 : 64 * 1024 * 1024,
+                maxEntries: 1000,
+                maxExpansionRatio: 100,
+                maxWallTimeMs: jobDeadline - Date.now(),
+              },
+              allowMultithreadedWasm: false,
+            },
+            outputPort: channel.port2,
+          } satisfies WorkerCommand,
+          [channel.port2]
+        );
+        await race(entryDone);
+        // Result only means prepared. Keep the producer alive until ZIP received its final chunk.
+        worker.terminate();
+        workers.delete(worker);
+      }
+      stage = 'save';
+      jobLabel = 'Archive finalization';
+      jobDeadline = Date.now() + 30_000;
+      if (zipWorker) {
+        zipWorker.postMessage({ version: 1, batchId, type: 'finish' } satisfies ZipCommand);
+        await race(zipDone);
+      }
+      await race(writeChain);
+      const archive = await race(sink.close());
+      return { batchId, packaging: single ? 'file' : 'zip', archive, totalFiles: files.length, results: completedResults };
+    } catch (error) {
+      for (const worker of workers) worker.terminate();
+      for (const port of ports) port.close();
+      let abortTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          sink.abort(),
+          new Promise<void>((resolve) => {
+            abortTimer = setTimeout(resolve, 250);
+          }),
+        ]);
+      } catch {
+        /* Preserve the processing error. */
+      } finally {
+        if (abortTimer) clearTimeout(abortTimer);
+      }
+      throw error;
+    } finally {
+      if (timer) clearInterval(timer);
+      signal.removeEventListener('abort', cancel);
+      for (const worker of workers) worker.terminate();
+      for (const port of ports) port.close();
     }
-    this.isProcessing = false;
+  }
+  async cancel() {
+    this.currentAbortController?.abort();
+    await this.pending?.catch(() => {});
   }
 }
-
 export const scheduler = new BatchScheduler();

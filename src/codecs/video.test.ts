@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWebCodecsSupported, processVideo } from './video';
+import { isWebCodecsSupported, processVideo, validateVideoCandidate } from './video';
 import type { ResourceLimits, VideoPolicy } from '../core/types';
 
 const defaultLimits: ResourceLimits = {
@@ -52,5 +52,33 @@ describe('Video Capabilities and Baseline Adapter', () => {
     const result = await processVideo(buffer, defaultVideoPolicy, strictLimits);
     expect(result.disposition).toBe('original');
     expect(result.buffer.byteLength).toBe(50);
+  });
+  it('rejects a finalized container without encoded media packets', async () => {
+    const mb = await import('mediabunny');
+    const target = new mb.BufferTarget();
+    const output = new mb.Output({ target, format: new mb.WebMOutputFormat() });
+    const source = new mb.EncodedVideoPacketSource('vp8');
+    output.addVideoTrack(source);
+    await output.start();
+    source.close();
+    await output.finalize();
+    expect(target.buffer).not.toBeNull();
+    expect(
+      await validateVideoCandidate(
+        target.buffer!,
+        {
+          format: 'webm',
+          mime: 'video/webm',
+          extension: 'webm',
+          durationSec: 1,
+          videoTracks: [{ width: 160, height: 120, codec: 'vp8' }],
+          audioTracks: [],
+          isSupported: true,
+          canRemux: true,
+          canTranscode: true,
+        },
+        defaultLimits
+      )
+    ).toBe(false);
   });
 });

@@ -1,4 +1,5 @@
-import { decode, encode } from '@jsquash/avif';
+import decode from '@jsquash/avif/decode.js';
+import encode from './avifSingleThread';
 import type { ImageCodecAdapter, DecodedImage } from './types';
 import { materializeStandaloneBuffer } from './types';
 import type { ImagePolicy } from '../core/types';
