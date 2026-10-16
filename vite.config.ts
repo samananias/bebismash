@@ -30,12 +30,36 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    include: [
+      '@jsquash/jpeg',
+      '@jsquash/png',
+      '@jsquash/oxipng',
+      '@jsquash/webp',
+      '@jsquash/avif',
+      'fflate',
+      'mediabunny',
+      'pdf-lib',
+    ],
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,
     strictPort: true,
     headers: isolationHeaders,
-    proxy: { '/api': 'http://127.0.0.1:8788' },
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8788',
+        configure: (proxy) => {
+          proxy.on('error', (_err, _req, res) => {
+            if (res && 'writeHead' in res && !res.headersSent) {
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Backend server on port 8788 not running' }));
+            }
+          });
+        },
+      },
+    },
   },
   preview: {
     host: '127.0.0.1',

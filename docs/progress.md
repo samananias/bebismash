@@ -1,5 +1,9 @@
 # BebiSmash Implementation Progress
 
+## Local tooling update — 2026-10-16
+
+Upgraded Wrangler from 3.114.17 to 4.151.0 and Workers type definitions to 5.20261016.1; see [ADR 0002](adr/0002-wrangler-4-upgrade.md). Pages continues to reject custom configuration paths. No remote resources were changed.
+
 > Canonical tracker for implementation milestones, capability gates, workstream status, and unresolved risks. Maintained during development outside [AGENTS.md](../AGENTS.md).
 
 ---
