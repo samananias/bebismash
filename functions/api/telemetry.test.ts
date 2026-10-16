@@ -9,6 +9,23 @@ describe('Edge Telemetry Functions', () => {
     TELEMETRY_ENABLED: 'true',
     DB: {
       prepare: vi.fn().mockReturnValue({
+        all: vi.fn().mockResolvedValue({
+          results: [
+            {
+              format: null,
+              outcome: null,
+              file_count: null,
+              input_bytes: null,
+              output_bytes: null,
+              updated_at: null,
+              started_at: '2026-10-16T00:00:00Z',
+              legacy_files: 42,
+              legacy_input: 5000000,
+              legacy_saved: 2000000,
+              legacy_updated: '2026-10-16T12:00:00Z',
+            },
+          ],
+        }),
         first: vi.fn().mockResolvedValue({
           id: 1,
           total_files_smashed: 42,
@@ -52,7 +69,7 @@ describe('Edge Telemetry Functions', () => {
 
     const res = await onRequestGet(context);
     expect(res.status).toBe(200);
-    expect(res.headers.get('Cache-Control')).toBe('public, max-age=30');
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
 
     const json = (await res.json()) as {
       total_files_smashed: number;

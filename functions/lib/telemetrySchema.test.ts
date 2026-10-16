@@ -76,3 +76,39 @@ describe('Edge Telemetry Schemas', () => {
     expect(TelemetryBatchSchema.safeParse(emptyBatch).success).toBe(false);
   });
 });
+
+import { AggregateTelemetrySchema } from './telemetrySchema';
+describe('v2 aggregate envelopes', () => {
+  const aggregate = () => ({
+    version: 2,
+    submission_id: '223e4567-e89b-12d3-a456-426614174000',
+    buckets: [
+      {
+        format: 'jpg',
+        outcome: 'compressed',
+        file_count: 100,
+        input_bytes: 5 * 1024 ** 3,
+        output_bytes: 2 * 1024 ** 3,
+      },
+    ],
+  });
+  it('supports 100 files and byte totals above 2 GiB', () =>
+    expect(AggregateTelemetrySchema.safeParse(aggregate()).success).toBe(true));
+  it.each([
+    'duplicates',
+    'expanded',
+    'not rounded',
+    'preserved mismatch',
+    'unknown property',
+    'too many',
+  ])('rejects %s', (reason) => {
+    const a = aggregate();
+    if (reason === 'duplicates') a.buckets.push({ ...a.buckets[0]! });
+    if (reason === 'expanded') a.buckets[0]!.output_bytes = 6 * 1024 ** 3;
+    if (reason === 'not rounded') a.buckets[0]!.input_bytes++;
+    if (reason === 'preserved mismatch') a.buckets[0]!.outcome = 'preserved';
+    if (reason === 'unknown property') Object.assign(a.buckets[0]!, { filename: 'secret.jpg' });
+    if (reason === 'too many') a.buckets[0]!.file_count = 1001;
+    expect(AggregateTelemetrySchema.safeParse(a).success).toBe(false);
+  });
+});

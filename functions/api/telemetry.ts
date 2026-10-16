@@ -1,6 +1,7 @@
 import type { PagesFunction } from '@cloudflare/workers-types';
-import { TelemetryBatchSchema } from '../lib/telemetrySchema';
-import type { Env, GlobalStatsRow } from '../lib/types';
+import { AggregateTelemetrySchema, TelemetryBatchSchema } from '../lib/telemetrySchema';
+import type { Env } from '../lib/types';
+export { onRequestGet } from './stats';
 
 const MAX_BODY_BYTES = 16 * 1024; // 16 KiB
 
@@ -13,40 +14,6 @@ export const onRequestOptions: PagesFunction = async () => {
       'X-Content-Type-Options': 'nosniff',
     },
   });
-};
-
-export const onRequestGet: PagesFunction<Env> = async (context) => {
-  try {
-    const row = await context.env.DB.prepare(
-      'SELECT total_files_smashed, total_bytes_original, total_bytes_saved, updated_at FROM global_stats WHERE id = 1'
-    ).first<GlobalStatsRow>();
-
-    const stats = {
-      total_files_smashed: row?.total_files_smashed ?? 0,
-      total_bytes_original: row?.total_bytes_original ?? 0,
-      total_bytes_saved: row?.total_bytes_saved ?? 0,
-      updated_at: row?.updated_at ?? new Date().toISOString(),
-    };
-
-    return new Response(JSON.stringify(stats), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json; charset=UTF-8',
-        'Cache-Control': 'public, max-age=30',
-        'X-Content-Type-Options': 'nosniff',
-      },
-    });
-  } catch (err) {
-    console.error('Error fetching global telemetry statistics:', err);
-    return new Response(JSON.stringify({ error: 'Database unavailable' }), {
-      status: 503,
-      headers: {
-        'Content-Type': 'application/json; charset=UTF-8',
-        'Cache-Control': 'no-store',
-        'X-Content-Type-Options': 'nosniff',
-      },
-    });
-  }
 };
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
@@ -145,9 +112,29 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   // 8. Validate schema
+  const aggregate = AggregateTelemetrySchema.safeParse(json);
+  if (aggregate.success) {
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`DELETE FROM telemetry_submissions WHERE submission_id IN
+          (SELECT submission_id FROM telemetry_submissions WHERE received_at < strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 days') ORDER BY received_at LIMIT 100)`),
+        env.DB.prepare(`DELETE FROM compression_logs WHERE id IN
+          (SELECT id FROM compression_logs WHERE created_at < datetime('now','-30 days') ORDER BY created_at LIMIT 100)`),
+        env.DB.prepare(
+          'INSERT INTO telemetry_submissions(submission_id,buckets) VALUES (?,?) ON CONFLICT(submission_id) DO NOTHING'
+        ).bind(aggregate.data.submission_id, JSON.stringify(aggregate.data.buckets)),
+      ]);
+      return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
+    } catch {
+      return new Response('Statistics unavailable', {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+  }
   const parsed = TelemetryBatchSchema.safeParse(json);
   if (!parsed.success) {
-    return new Response(JSON.stringify(parsed.error), {
+    return new Response(JSON.stringify({ error: 'Invalid telemetry envelope' }), {
       status: 422,
       headers: {
         'Content-Type': 'application/json; charset=UTF-8',

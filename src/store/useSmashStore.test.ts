@@ -21,6 +21,7 @@ const result = (): BatchResult => ({
   archive: { name: 'test.zip', bytes: 120, kind: 'blob', url: 'blob:test' },
   results: [
     {
+      disposition: 'transformed',
       extension: 'txt',
       category: 'other',
       intensity: 'balanced',
@@ -56,6 +57,33 @@ describe('Monoterm batch state', () => {
     expect(state.files[state.order[0]!]!.status).toBe('packed');
     expect(state.download?.bytes).toBe(120);
     expect(mocks.submit).not.toHaveBeenCalled();
+  });
+  it('submits only after completed output with consent still enabled', async () => {
+    useSmashStore.getState().setTelemetryConsent(true);
+    mocks.processBatch.mockResolvedValueOnce(result());
+    useSmashStore.getState().stageFiles([file()]);
+    await useSmashStore.getState().startSmash();
+    await vi.waitFor(() => expect(mocks.submit).toHaveBeenCalledOnce());
+    expect(useSmashStore.getState().download?.ready).toBe(true);
+    expect(mocks.submit).toHaveBeenCalledWith(result().results, true);
+  });
+  it('does not send after consent is revoked while processing', async () => {
+    let finish!: (value: BatchResult) => void;
+    mocks.processBatch.mockImplementationOnce(
+      () =>
+        new Promise<BatchResult>((resolve) => {
+          finish = resolve;
+        })
+    );
+    useSmashStore.getState().setTelemetryConsent(true);
+    useSmashStore.getState().stageFiles([file()]);
+    const pending = useSmashStore.getState().startSmash();
+    await vi.waitFor(() => expect(mocks.processBatch).toHaveBeenCalledOnce());
+    useSmashStore.getState().setTelemetryConsent(false);
+    finish(result());
+    await pending;
+    expect(mocks.submit).not.toHaveBeenCalled();
+    expect(useSmashStore.getState().phase).toBe('complete');
   });
   it('locks queue, preset and duplicate starts while processing', async () => {
     let finish!: (value: BatchResult) => void;

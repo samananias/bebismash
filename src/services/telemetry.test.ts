@@ -1,109 +1,111 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { submitTelemetryBatch } from './telemetry';
-
-describe('Client Telemetry Service', () => {
+import type { TelemetryReportItem } from './telemetry';
+const item = (overrides: Partial<TelemetryReportItem> = {}): TelemetryReportItem => ({
+  disposition: 'transformed',
+  extension: 'jpeg',
+  category: 'image',
+  intensity: 'heavy',
+  originalBytes: 5 * 1024 * 1024 * 1024,
+  compressedBytes: 2 * 1024 * 1024 * 1024,
+  durationMs: 123,
+  deviceTier: 'high',
+  ...overrides,
+});
+describe('Foreground aggregate telemetry', () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
+    vi.stubGlobal('navigator', { onLine: true, sendBeacon: vi.fn() });
+    vi.stubGlobal('document', { visibilityState: 'visible' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
   });
-
-  it('does nothing when consent is false', () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-
-    submitTelemetryBatch(
-      [
-        {
-          extension: 'png',
-          category: 'image',
-          intensity: 'balanced',
-          originalBytes: 100000,
-          compressedBytes: 50000,
-          durationMs: 340,
-          deviceTier: 'standard',
-        },
-      ],
-      false
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+  it('sends one anonymous aggregate for 100 files above the old 2 GiB limit', async () => {
+    await submitTelemetryBatch(
+      Array.from({ length: 100 }, () => item()),
+      true
     );
-
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, options] = vi.mocked(fetch).mock.calls[0]!;
+    expect(url).toBe('/api/telemetry');
+    expect(options).toMatchObject({ method: 'POST', credentials: 'omit', cache: 'no-store' });
+    expect(options).not.toHaveProperty('keepalive');
+    expect(navigator.sendBeacon).not.toHaveBeenCalled();
+    const body = JSON.parse(options!.body as string);
+    expect(Object.keys(body).sort()).toEqual(['buckets', 'submission_id', 'version']);
+    expect(body.buckets).toEqual([
+      {
+        format: 'jpg',
+        outcome: 'compressed',
+        file_count: 100,
+        input_bytes: 500 * 1024 ** 3,
+        output_bytes: 200 * 1024 ** 3,
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/filename|duration|device|intensity|category|hash/);
   });
-
-  it('dispatches anonymous batch via sendBeacon when available', () => {
-    const sendBeaconMock = vi.fn().mockReturnValue(true);
-    vi.stubGlobal('navigator', { sendBeacon: sendBeaconMock });
-
-    submitTelemetryBatch(
+  it('separates preserved originals from actually smaller transforms and rounds sizes', async () => {
+    await submitTelemetryBatch(
       [
-        {
-          extension: 'jpg',
-          category: 'image',
-          intensity: 'heavy',
-          originalBytes: 204800,
-          compressedBytes: 102400,
-          durationMs: 462,
-          deviceTier: 'high',
-        },
+        item({ originalBytes: 4097, compressedBytes: 2049 }),
+        item({ disposition: 'original', originalBytes: 4097, compressedBytes: 4097 }),
       ],
       true
     );
-
-    expect(sendBeaconMock).toHaveBeenCalledTimes(1);
-    const [endpoint, blob] = sendBeaconMock.mock.calls[0] as [string, Blob];
-    expect(endpoint).toBe('/api/telemetry');
-    expect(blob.type.toLowerCase()).toBe('text/plain;charset=utf-8');
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string);
+    expect(body.buckets).toEqual([
+      {
+        format: 'jpg',
+        outcome: 'compressed',
+        file_count: 1,
+        input_bytes: 4096,
+        output_bytes: 2048,
+      },
+      { format: 'jpg', outcome: 'preserved', file_count: 1, input_bytes: 4096, output_bytes: 4096 },
+    ]);
   });
-
-  it('falls back to nonblocking fetch with keepalive when sendBeacon fails', () => {
-    const sendBeaconMock = vi.fn().mockReturnValue(false);
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal('navigator', { sendBeacon: sendBeaconMock });
-    vi.stubGlobal('fetch', fetchMock);
-
-    submitTelemetryBatch(
-      [
-        {
-          extension: 'webp',
-          category: 'image',
-          intensity: 'gentle',
-          originalBytes: 8192,
-          compressedBytes: 4096,
-          durationMs: 120,
-          deviceTier: 'constrained',
-        },
-      ],
-      true
-    );
-
-    expect(sendBeaconMock).toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/telemetry',
-      expect.objectContaining({
-        method: 'POST',
-        keepalive: true,
-        credentials: 'omit',
-      })
-    );
+  it.each(['no consent', 'offline', 'hidden', 'invalid', 'expanded', 'too many', 'too large'])(
+    'does not submit: %s',
+    async (reason) => {
+      if (reason === 'offline') vi.stubGlobal('navigator', { onLine: false });
+      if (reason === 'hidden') vi.stubGlobal('document', { visibilityState: 'hidden' });
+      const items =
+        reason === 'too many'
+          ? Array.from({ length: 1001 }, () => item())
+          : [
+              item(
+                reason === 'invalid'
+                  ? { originalBytes: NaN }
+                  : reason === 'expanded'
+                    ? { compressedBytes: 6 * 1024 ** 3 }
+                    : reason === 'too large'
+                      ? { originalBytes: 2 * 1024 ** 4 }
+                      : {}
+              ),
+            ];
+      await submitTelemetryBatch(items, reason !== 'no consent');
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  );
+  it('discards network failures without retry', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('offline'));
+    await expect(submitTelemetryBatch([item()], true)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledOnce();
   });
-
-  it('filters out items where compressedBytes exceeds originalBytes', () => {
-    const sendBeaconMock = vi.fn().mockReturnValue(true);
-    vi.stubGlobal('navigator', { sendBeacon: sendBeaconMock });
-
-    submitTelemetryBatch(
-      [
-        {
-          extension: 'jpg',
-          category: 'image',
-          intensity: 'balanced',
-          originalBytes: 1000,
-          compressedBytes: 2000, // expanded!
-          durationMs: 50,
-          deviceTier: 'standard',
-        },
-      ],
-      true
+  it('aborts a stalled request and releases its timer', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetch).mockImplementation(
+      (_url, options) =>
+        new Promise((_resolve, reject) =>
+          options!.signal!.addEventListener('abort', () => reject(new Error('aborted')))
+        )
     );
-
-    expect(sendBeaconMock).not.toHaveBeenCalled();
+    const result = submitTelemetryBatch([item()], true);
+    await vi.advanceTimersByTimeAsync(5000);
+    await result;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 });

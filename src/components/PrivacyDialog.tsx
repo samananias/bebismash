@@ -58,13 +58,18 @@ export function PrivacyDialog({ isOpen, onClose }: PrivacyDialogProps) {
         </p>
         <h3>Optional community statistics</h3>
         <p>
-          When you opt in, we send the file’s allowlisted extension and category, compression
-          preset, coarse device tier, byte counts rounded down to KiB, and duration rounded to 100
-          ms. These self-reported numbers power the approximate community savings counter.
+          When you opt in, completed batches send counts and byte totals rounded down to KiB,
+          grouped by allowlisted input format and whether files were compressed or preserved. One
+          request is sent only while this page is visible and online. Failed reports are discarded;
+          they never delay your download. These approximate numbers exclude ZIP overhead.
         </p>
         <p>
           Cloudflare processes network identifiers to deliver the service and prevent abuse. IP
           addresses are not stored in our statistics database.
+        </p>
+        <p>
+          Only public community statistics may be saved in local storage. Preparing offline use
+          saves app and engine assets; it never saves your files or output.
         </p>
         <label className="consent-label">
           <input

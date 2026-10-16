@@ -1,19 +1,14 @@
+import { formatBytes } from './core/formatBytes';
 import { useRef, useState, lazy, Suspense } from 'react';
 import type { DragEvent } from 'react';
 import type { Intensity } from './core/types';
 import { useSmashStore } from './store/useSmashStore';
 import { TelemetryBadge } from './components/TelemetryBadge';
-const JobStatus = lazy(() =>
-  import('./components/JobStatus').then((module) => ({ default: module.JobStatus }))
+import { LazyBoundary } from './components/LazyBoundary';
+const FileList = lazy(() =>
+  import('./components/FileList').then((module) => ({ default: module.FileList }))
 );
 import { PixelArt } from './components/PixelArt';
-
-function formatBytes(bytes: number) {
-  if (!bytes) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const index = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / 1024 ** index).toFixed(index ? 2 : 0)} ${units[index]}`;
-}
 
 function UploadIcon() {
   return (
@@ -267,77 +262,20 @@ export default function App() {
             </button>
           </div>
           {order.length ? (
-            <ul className="file-list">
-              {order.map((id) => {
-                const file = files[id];
-                if (!file) return null;
-                const packed = file.status === 'packed';
-                const reduction =
-                  packed && file.outputBytes !== null && file.originalBytes > 0
-                    ? Math.max(0, Math.round((1 - file.outputBytes / file.originalBytes) * 100))
-                    : 0;
-                const extension = file.name.includes('.')
-                  ? file.name.split('.').pop()?.slice(0, 7).toUpperCase()
-                  : 'FILE';
-                return (
-                  <li className="file-row" key={id}>
-                    <div className="file-symbol" aria-hidden="true">
-                      <svg viewBox="0 0 40 48" fill="none">
-                        <path
-                          d="M6 2h20l10 10v34H6V2Zm20 0v12h10M13 24h16M13 31h16"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                        />
-                      </svg>
-                      <span>{extension || 'FILE'}</span>
-                    </div>
-                    <div className="file-details">
-                      <div className="file-title">
-                        <h3 title={file.name}>{file.name}</h3>
-                        {editable && (
-                          <button
-                            className="remove-button"
-                            aria-label={`Remove ${file.name}`}
-                            onClick={() => removeFile(id)}
-                          >
-                            ×
-                          </button>
-                        )}
-                      </div>
-                      <div className="file-metrics">
-                        <span>{formatBytes(file.originalBytes)}</span>
-                        <span aria-hidden="true">→</span>
-                        <strong>
-                          {packed && file.outputBytes !== null
-                            ? formatBytes(file.outputBytes)
-                            : '—'}
-                        </strong>
-                        {packed && (
-                          <span className="saving">
-                            {reduction ? `−${reduction}%` : singleFile ? 'READY' : 'PACKED'}
-                          </span>
-                        )}
-                      </div>
-                      <Suspense
-                        fallback={<p className="file-caption">Preparing status details…</p>}
-                      >
-                        <JobStatus
-                          file={file}
-                          batchComplete={complete}
-                          singleFile={singleFile}
-                          retry={() => {
-                            void (async () => {
-                              await cancelSmash();
-                              await startSmash();
-                            })();
-                          }}
-                        />
-                      </Suspense>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <LazyBoundary>
+              <Suspense fallback={<p>Opening your file queue…</p>}>
+                <FileList
+                  order={order}
+                  files={files}
+                  editable={editable}
+                  singleFile={singleFile}
+                  complete={complete}
+                  removeFile={removeFile}
+                  cancelSmash={cancelSmash}
+                  startSmash={startSmash}
+                />
+              </Suspense>
+            </LazyBoundary>
           ) : (
             <div className="empty-state">
               <span className="empty-pixels" aria-hidden="true">

@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  TELEMETRY_FORMATS,
+  MAX_REPORTED_BYTES,
+  MAX_REPORTED_FILES,
+} from '../../src/core/telemetryContract';
 
 const count = z.number().int().min(0).max(2_147_483_647);
 
@@ -73,3 +78,37 @@ export const TelemetryBatchSchema = z
 
 export type TelemetryEvent = z.infer<typeof TelemetryEventSchema>;
 export type TelemetryBatch = z.infer<typeof TelemetryBatchSchema>;
+
+export const AggregateTelemetrySchema = z
+  .strictObject({
+    version: z.literal(2),
+    submission_id: z.string().uuid(),
+    buckets: z
+      .array(
+        z.strictObject({
+          format: z.enum(TELEMETRY_FORMATS),
+          outcome: z.enum(['compressed', 'preserved']),
+          file_count: z.number().int().min(1).max(MAX_REPORTED_FILES),
+          input_bytes: z.number().int().min(0).max(MAX_REPORTED_BYTES),
+          output_bytes: z.number().int().min(0).max(MAX_REPORTED_BYTES),
+        })
+      )
+      .min(1)
+      .max(26),
+  })
+  .superRefine(({ buckets }, ctx) => {
+    if (
+      new Set(buckets.map((b) => `${b.format}:${b.outcome}`)).size !== buckets.length ||
+      buckets.reduce((n, b) => n + b.file_count, 0) > MAX_REPORTED_FILES ||
+      buckets.reduce((n, b) => n + b.input_bytes, 0) > MAX_REPORTED_BYTES ||
+      buckets.some(
+        (b) =>
+          b.output_bytes > b.input_bytes ||
+          b.input_bytes % 1024 !== 0 ||
+          b.output_bytes % 1024 !== 0 ||
+          (b.outcome === 'preserved' && b.input_bytes !== b.output_bytes)
+      )
+    ) {
+      ctx.addIssue({ code: 'custom', message: 'Invalid aggregate relationships or limits' });
+    }
+  });

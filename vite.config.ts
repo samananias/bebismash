@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { offlineAssets } from './scripts/offlineAssets';
 
 const isolationHeaders = {
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -9,7 +10,7 @@ const isolationHeaders = {
 };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), offlineAssets()],
   assetsInclude: ['**/*.wasm'],
   worker: { format: 'es' },
   build: {

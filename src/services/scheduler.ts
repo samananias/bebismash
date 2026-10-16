@@ -16,6 +16,7 @@ import { writeDirectOutput } from './directOutput';
 
 export type SchedulerEventListener = (event: WorkerEvent | ZipEvent) => void;
 export interface CompletedFileResult {
+  disposition: 'original' | 'transformed';
   extension: string;
   category: 'image' | 'video' | 'document' | 'archive' | 'other';
   intensity: Intensity;
@@ -413,6 +414,7 @@ export class BatchScheduler {
             }
             resultReceived = true;
             completedResults.push({
+              disposition: event.disposition,
               extension: file.name.split('.').pop()?.toLowerCase() ?? 'other',
               category: route.category,
               intensity,

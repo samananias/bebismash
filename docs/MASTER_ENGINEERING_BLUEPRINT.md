@@ -2,6 +2,8 @@
 
 Status: implementation contract, 2026-10-16. Input: [foundation.md](foundation.md). This blueprint governs implementation when the concept document leaves choices open or makes unsupported guarantees. [DOCS.md](DOCS.md) is the onboarding guide; [AGENTS.md](../AGENTS.md) is the standalone contributor contract.
 
+Telemetry/offline update: [ADR 0005](adr/0005-local-first-statistics-and-offline-assets.md) supersedes the v1 client write strategy and 30-second cached statistics reads below. New clients make one stats attempt per document, aggregate consented foreground writes per completed batch, and prepare offline application assets only by explicit action. Legacy API/schema compatibility remains during rollout; files never enter persistent storage.
+
 The repository currently contains the concept and these planning documents. Code blocks below are implementation templates, not installed or runtime-verified application files. Infrastructure identifiers must be provisioned before deployment. Commands named here are the required future package-script contract.
 
 Single-file delivery update: [ADR 0004](adr/0004-direct-single-file-output.md) supersedes ZIP-only output below for a single selected file. One file saves directly in its resulting format; multiple files use the ZIP bundler. The direct receiver grants transferable chunk credit only after sink acceptance. All existing codec, memory, cancellation and privacy boundaries still apply.

@@ -4,6 +4,8 @@ Read [MASTER_ENGINEERING_BLUEPRINT.md](MASTER_ENGINEERING_BLUEPRINT.md) before i
 
 ## Repository status
 
+For implemented telemetry/offline behavior, see [ADR 0005](adr/0005-local-first-statistics-and-offline-assets.md) and [progress.md](progress.md). The original baseline language and command templates below are historical; verify installed CLI flags. In Wrangler 4.151, Pages dev rejects custom `--config` paths. Use local D1/variable overrides and an isolated `--persist-to` directory for tests; never use `--remote` for local validation.
+
 This repository is a documentation baseline. It has no package.json, application, tests, Wrangler resources or Git repository yet. The commands below become runnable during M0 bootstrap; they are not claims about existing scripts. Do not run remote commands until real Cloudflare resources and environment bindings are configured.
 
 ## Toolchain and first bootstrap

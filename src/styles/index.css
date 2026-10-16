@@ -564,6 +564,41 @@ input {
 .privacy-link:hover {
   color: var(--accent);
 }
+.telemetry p {
+  margin: 0;
+}
+.telemetry {
+  max-width: 65ch;
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: end;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.telemetry details {
+  width: 100%;
+}
+.telemetry details p {
+  margin-block: 8px;
+}
+.telemetry summary {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 4px;
+}
+.telemetry ul {
+  list-style: none;
+  padding: 0;
+}
+.footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.offline-status {
+  font-size: 12px;
+}
 .privacy-dialog {
   background: var(--surface);
   color: var(--ink);
@@ -791,7 +826,8 @@ input {
   }
   .telemetry {
     align-items: flex-start;
-    font-size: 9px;
+    font-size: 14px;
+    text-align: start;
   }
   .privacy-dialog {
     padding: 18px;
