@@ -73,7 +73,9 @@ export default function App() {
           : phase === 'failed'
             ? 'Batch stopped. Review the error below and retry.'
             : complete
-              ? singleFile ? 'Your file is ready.' : 'Your archive is ready.'
+              ? singleFile
+                ? 'Your file is ready.'
+                : 'Your archive is ready.'
               : order.length
                 ? `${order.length} ${order.length === 1 ? 'file' : 'files'} ready to smash.`
                 : 'Ready when you are.';
@@ -193,7 +195,16 @@ export default function App() {
                       }
                     ).showSaveFilePicker({
                       suggestedName: singleFile ? files[order[0]!]!.name : 'BebiSmash.zip',
-                      ...(singleFile ? {} : { types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }] }),
+                      ...(singleFile
+                        ? {}
+                        : {
+                            types: [
+                              {
+                                description: 'ZIP archive',
+                                accept: { 'application/zip': ['.zip'] },
+                              },
+                            ],
+                          }),
                     });
                     const { FileSystemArchiveSink } = await import('./services/sink');
                     await startSmash(new FileSystemArchiveSink(handle));
@@ -230,7 +241,11 @@ export default function App() {
               disabled={!order.length}
               onClick={() => void startSmash()}
             >
-              {phase === 'failed' || phase === 'cancelled' ? 'Retry batch' : singleFile ? 'Compress file' : 'Smash into ZIP'}{' '}
+              {phase === 'failed' || phase === 'cancelled'
+                ? 'Retry batch'
+                : singleFile
+                  ? 'Compress file'
+                  : 'Smash into ZIP'}{' '}
               <span aria-hidden="true">→</span>
             </button>
           )}
@@ -298,7 +313,9 @@ export default function App() {
                             : '—'}
                         </strong>
                         {packed && (
-                          <span className="saving">{reduction ? `−${reduction}%` : 'PACKED'}</span>
+                          <span className="saving">
+                            {reduction ? `−${reduction}%` : singleFile ? 'READY' : 'PACKED'}
+                          </span>
                         )}
                       </div>
                       <Suspense
@@ -341,15 +358,21 @@ export default function App() {
                 {savings !== null
                   ? savings > 0
                     ? `${formatBytes(savings)} less to carry.`
-                    : singleFile ? 'Your file is ready.' : 'Your files, neatly packaged.'
+                    : singleFile
+                      ? 'Your file is ready.'
+                      : 'Your files, neatly packaged.'
                   : order.length
                     ? `${formatBytes(queuedBytes)} in your queue.`
                     : 'Make a little room.'}
               </strong>
               <p>
                 {download?.ready
-                  ? download.packaging === 'file' ? `${formatBytes(download.bytes)} · ${download.name}` : `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
-                  : singleFile ? 'Actual savings appear when your file is ready.' : 'Actual savings appear when your archive is ready.'}
+                  ? download.packaging === 'file'
+                    ? `${formatBytes(download.bytes)} · ${download.name}`
+                    : `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
+                  : singleFile
+                    ? 'Actual savings appear when your file is ready.'
+                    : 'Actual savings appear when your archive is ready.'}
               </p>
             </div>
           </div>

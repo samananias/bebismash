@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { unzipSync, strFromU8 } from 'fflate';
 
 test('local packaging, private network, download validity and new batch', async ({
   page,
@@ -22,22 +21,30 @@ test('local packaging, private network, download validity and new batch', async 
   expect(engines).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath('desktop-empty.png'), fullPage: true });
   const source = 'BebiSmash local fixture.\n'.repeat(400);
+  const filename = `${'a'.repeat(120)}.txt`;
   await page
     .getByLabel('Choose files', { exact: true })
-    .setInputFiles({ name: 'local-only.txt', mimeType: 'text/plain', buffer: Buffer.from(source) });
+    .setInputFiles({ name: filename, mimeType: 'text/plain', buffer: Buffer.from(source) });
   await page.getByRole('button', { name: 'Heavy', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Heavy', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true'
   );
   await page.screenshot({ path: testInfo.outputPath('desktop-queued.png'), fullPage: true });
-  await page.getByRole('button', { name: 'Smash into ZIP' }).click();
-  await expect(page.getByRole('link', { name: 'Download ZIP' })).toBeVisible({ timeout: 20000 });
+  await page.getByRole('button', { name: 'Compress file' }).click();
+  await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 20000 });
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('link', { name: 'Download ZIP' }).click();
+  await page.getByRole('link', { name: 'Download file' }).click();
   const download = await downloadPromise;
-  const archive = unzipSync(new Uint8Array(await readFile((await download.path())!)));
-  expect(strFromU8(archive['local-only.txt']!)).toBe(source);
+  expect(download.suggestedFilename()).toBe(filename);
+  expect(await readFile((await download.path())!, 'utf8')).toBe(source);
+  expect(engines.some((url) => /zip\.worker/.test(url))).toBe(false);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath('mobile-direct-download.png'),
+    fullPage: true,
+  });
   await page.getByRole('button', { name: 'New batch' }).click();
   await expect(page.getByText('A clean slate. Add a few files to get started.')).toBeVisible();
   expect(requests).toEqual([]);
@@ -98,7 +105,7 @@ test('cancellation and worker failure retain files for retry', async ({ page }) 
     mimeType: 'text/plain',
     buffer: Buffer.from('retry fixture'),
   });
-  await page.getByRole('button', { name: 'Smash into ZIP' }).click();
+  await page.getByRole('button', { name: 'Compress file' }).click();
   await expect(page.getByRole('button', { name: 'Choose files' })).toBeDisabled();
   await expect(page.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
   await page.getByRole('button', { name: 'Cancel batch' }).click();
@@ -119,6 +126,6 @@ test('cancellation and worker failure retain files for retry', async ({ page }) 
   await expect(page.getByRole('alert')).toContainText('DECODE_FAILED');
   await page.unroute(workerPattern);
   await page.getByRole('button', { name: 'Retry batch' }).click();
-  await expect(page.getByRole('link', { name: 'Download ZIP' })).toBeVisible({ timeout: 20000 });
+  await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 20000 });
   await expect(page.getByRole('alert')).toHaveCount(0);
 });

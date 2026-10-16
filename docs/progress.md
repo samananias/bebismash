@@ -1,5 +1,13 @@
 # BebiSmash Implementation Progress
 
+## Direct single-file downloads — 2026-10-16
+
+At the user's request, one selected file now saves directly in its resulting format; two or more files retain ZIP output. Single-file runs skip the ZIP worker, open the sink with output filename/MIME, and receive worker-owned transferable chunks through a bounded credited MessagePort. Each next credit follows sink acceptance; successful download follows sink close. Cancellation, write/close failures, media validation, original preservation and existing memory caps still apply. Long sanitized names preserve their extension. Generic files without a native compression operation return their original bytes without a new wrapper.
+
+UI buttons, progress/next steps, summary and local disk picker distinguish Compress file / Download file / Save file to disk from multi-file ZIP output. The internal result carries an explicit file/zip packaging field. See [ADR 0004](adr/0004-direct-single-file-output.md), which supersedes the blueprint's ZIP-only single-file delivery behavior.
+
+Validation: 96 unit/edge tests passed, including direct-output backpressure, transferred-buffer detachment, cancellation, write/close failures, and filename/MIME tests. All 13 built Edge E2E tests passed with raw single-file text/PNG/video downloads and independent media decode, plus a multi-file ZIP extraction regression; the dedicated real ZIP-worker test also passed in Edge. Formatting, lint, TypeScript, asset preparation, production build and in-memory SQLite checks passed using installed CLI entry points. Firefox/WebKit and physical-device tests were not rerun; the prior missing-browser and heavy-video limits still apply. The existing size gate passes below 80,000 bytes; the stricter 50,000-byte contract remains unmet. No dependencies, telemetry schema, migrations or deployment changed.
+
 ## Processing lifecycle repair and observability — 2026-10-16
 
 Fixed the confirmed media hang: prepared results no longer terminate producers before ZIP receives their output. Entries open after preparation, workers terminate after entry-packed, output credit waits for sink acknowledgments, and successful download waits for final acknowledgment and sink close. Worker crashes/message errors, sink failures, cancellation and external deadlines settle the batch. Stable store job IDs and fresh attempt IDs connect independent file states; subscriptions are removed on completion/failure/cancellation.

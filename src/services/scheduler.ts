@@ -123,7 +123,9 @@ export class BatchScheduler {
     };
     try {
       if (signal.aborted) throw new Error('Batch processing was cancelled');
-      const opening = single ? Promise.resolve() : sink.open(`BebiSmash_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`);
+      const opening = single
+        ? Promise.resolve()
+        : sink.open(`BebiSmash_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`);
       void opening
         .then(() => {
           if (signal.aborted) return sink.abort();
@@ -137,9 +139,11 @@ export class BatchScheduler {
         else if (stage === 'start' && now - lastContact > 30_000)
           fail(new Error(`${jobLabel}: worker initialization timed out after 30 seconds.`));
       }, 1000);
-      const zipWorker = single ? null : addWorker(
-        new Worker(new URL('../workers/zip.worker.ts', import.meta.url), { type: 'module' })
-      );
+      const zipWorker = single
+        ? null
+        : addWorker(
+            new Worker(new URL('../workers/zip.worker.ts', import.meta.url), { type: 'module' })
+          );
       let ready!: () => void;
       const zipReady = new Promise<void>((resolve) => {
         ready = resolve;
@@ -153,54 +157,54 @@ export class BatchScheduler {
       let writeChain = Promise.resolve();
       let expectedSeq = 1;
       if (zipWorker) {
-      zipWorker.onmessage = ({ data: event }: MessageEvent<ZipEvent>) => {
-        if (!event || typeof event !== 'object') {
-          fail(new Error('Invalid ZIP worker message'));
-          return;
-        }
-        if (signal.aborted || event.batchId !== batchId) return;
-        if (event.version !== 1) {
-          fail(new Error('ZIP protocol version mismatch'));
-          return;
-        }
-        lastContact = Date.now();
-        if (event.type === 'zip-chunk') {
-          if (
-            event.seq !== expectedSeq++ ||
-            !(event.chunk.buffer instanceof ArrayBuffer) ||
-            event.chunk.byteLength !== event.chunk.buffer.byteLength ||
-            event.chunk.byteLength > 256 * 1024
-          ) {
-            fail(new Error('Invalid ZIP chunk or sequence'));
+        zipWorker.onmessage = ({ data: event }: MessageEvent<ZipEvent>) => {
+          if (!event || typeof event !== 'object') {
+            fail(new Error('Invalid ZIP worker message'));
             return;
           }
-          writeChain = writeChain.then(async () => {
-            if (signal.aborted) return;
-            await sink.write(event.chunk);
-            retainedBytes += customSink ? 0 : event.chunk.byteLength;
-            zipWorker.postMessage({
-              version: 1,
-              batchId,
-              type: 'sink-ack',
-              seq: event.seq,
-            } satisfies ZipCommand);
-          });
-          void writeChain.catch((error: Error) => fail(error));
-        } else if (event.type === 'zip-ready') ready();
-        else if (event.type === 'entry-packed' && event.entryId === expectedEntry) packed?.();
-        else if (event.type === 'zip-complete') done();
-        else if (event.type === 'zip-error')
-          fail(new Error(`ZIP: ${event.error.code} (${event.error.messageKey})`));
-        this.emit(event);
-      };
-      zipWorker.postMessage({
-        version: 1,
-        batchId,
-        type: 'open',
-        maxArchiveBytes: customSink ? 2 ** 31 - 1 : this.profile.blobLimitBytes,
-        expectedEntries: files.length,
-      } satisfies ZipCommand);
-      await race(zipReady);
+          if (signal.aborted || event.batchId !== batchId) return;
+          if (event.version !== 1) {
+            fail(new Error('ZIP protocol version mismatch'));
+            return;
+          }
+          lastContact = Date.now();
+          if (event.type === 'zip-chunk') {
+            if (
+              event.seq !== expectedSeq++ ||
+              !(event.chunk.buffer instanceof ArrayBuffer) ||
+              event.chunk.byteLength !== event.chunk.buffer.byteLength ||
+              event.chunk.byteLength > 256 * 1024
+            ) {
+              fail(new Error('Invalid ZIP chunk or sequence'));
+              return;
+            }
+            writeChain = writeChain.then(async () => {
+              if (signal.aborted) return;
+              await sink.write(event.chunk);
+              retainedBytes += customSink ? 0 : event.chunk.byteLength;
+              zipWorker.postMessage({
+                version: 1,
+                batchId,
+                type: 'sink-ack',
+                seq: event.seq,
+              } satisfies ZipCommand);
+            });
+            void writeChain.catch((error: Error) => fail(error));
+          } else if (event.type === 'zip-ready') ready();
+          else if (event.type === 'entry-packed' && event.entryId === expectedEntry) packed?.();
+          else if (event.type === 'zip-complete') done();
+          else if (event.type === 'zip-error')
+            fail(new Error(`ZIP: ${event.error.code} (${event.error.messageKey})`));
+          this.emit(event);
+        };
+        zipWorker.postMessage({
+          version: 1,
+          batchId,
+          type: 'open',
+          maxArchiveBytes: customSink ? 2 ** 31 - 1 : this.profile.blobLimitBytes,
+          expectedEntries: files.length,
+        } satisfies ZipCommand);
+        await race(zipReady);
       }
       const names = new Set<string>();
       for (let i = 0; i < files.length; i++) {
@@ -241,7 +245,10 @@ export class BatchScheduler {
         const originalOnly =
           route.reservationBytes > available ||
           (route.engine === 'video' && file.size > this.profile.blobLimitBytes);
-        if (!customSink && file.size + retainedBytes + (single ? 0 : 256 * 1024) > this.profile.blobLimitBytes) {
+        if (
+          !customSink &&
+          file.size + retainedBytes + (single ? 0 : 256 * 1024) > this.profile.blobLimitBytes
+        ) {
           throw new Error(
             `This file cannot safely fit the browser archive limit (${Math.floor(this.profile.blobLimitBytes / 1024 / 1024)} MiB). Use a smaller batch or Save ${single ? 'file' : 'ZIP'} to disk.`
           );
@@ -261,11 +268,15 @@ export class BatchScheduler {
                 ? route.format === 'pdf'
                   ? 'pdf-lib'
                   : 'OOXML / jSquash'
-                : 'File streaming / fflate';
+                : single
+                  ? 'File streaming'
+                  : 'File streaming / fflate';
         status(
           'start',
           originalOnly
-            ? 'Transform exceeds memory budget; packaging original without compression'
+            ? single
+              ? 'Transform exceeds memory budget; keeping original file'
+              : 'Transform exceeds memory budget; packaging original without compression'
             : 'Starting processing worker',
           engine,
           originalOnly ? 17 * 1024 * 1024 : route.reservationBytes
@@ -381,7 +392,8 @@ export class BatchScheduler {
             progressSequence.set(event.stage, event.seq);
           }
           lastContact = Date.now();
-          if (event.type === 'status' || event.type === 'progress') stage = event.stage;
+          if (event.type === 'status' || event.type === 'progress')
+            stage = single && event.stage === 'pack' ? 'save' : event.stage;
           if (event.type === 'ready') stage = 'inspect';
           if (event.type === 'error') {
             fail(
@@ -416,8 +428,13 @@ export class BatchScheduler {
               .normalize('NFC')
               .replace(/^.*[\\/]/, '')
               .replace(unsafeName, '_');
-            while (new TextEncoder().encode(base).length > 96)
-              base = Array.from(base).slice(0, -1).join('');
+            const sourceExtension = base.match(/\.[a-z0-9]{1,16}$/i)?.[0] ?? '';
+            let stem = sourceExtension ? base.slice(0, -sourceExtension.length) : base;
+            const nameBudget =
+              (single ? 220 : 96) - new TextEncoder().encode(sourceExtension).length;
+            while (new TextEncoder().encode(stem).length > nameBudget)
+              stem = Array.from(stem).slice(0, -1).join('');
+            base = stem + sourceExtension;
             base ||= 'file';
             if (base === '.' || base === '..') base = 'file';
             if (event.disposition === 'transformed')
@@ -428,38 +445,58 @@ export class BatchScheduler {
             let name = base;
             for (let suffix = 2; names.has(name); suffix++) name = `${base} (${suffix})`;
             names.add(name);
-            stage = 'pack';
-            if (zipWorker) zipWorker.postMessage(
-              {
-                version: 1,
-                batchId,
-                type: 'add',
-                entry: {
-                  entryId,
-                  jobId: ids.jobId,
-                  path: name,
-                  method: route.format === 'unknown' ? 'deflate' : 'store',
-                  level: intensity === 'heavy' ? 9 : intensity === 'balanced' ? 6 : 4,
-                  maxBytes: event.outputBytes,
-                },
-                entryPort: channel.port1,
-              } satisfies ZipCommand,
-              [channel.port1]
-            );
+            stage = single ? 'save' : 'pack';
+            if (zipWorker)
+              zipWorker.postMessage(
+                {
+                  version: 1,
+                  batchId,
+                  type: 'add',
+                  entry: {
+                    entryId,
+                    jobId: ids.jobId,
+                    path: name,
+                    method: route.format === 'unknown' ? 'deflate' : 'store',
+                    level: intensity === 'heavy' ? 9 : intensity === 'balanced' ? 6 : 4,
+                    maxBytes: event.outputBytes,
+                  },
+                  entryPort: channel.port1,
+                } satisfies ZipCommand,
+                [channel.port1]
+              );
             if (single) {
               let progressSeq = 0;
               const saving = (async () => {
                 await sink.open(name, event.mime);
-                if (signal.aborted) { await sink.abort(); throw new Error('File save was cancelled'); }
-                await writeDirectOutput(channel.port1, ids, event.outputBytes, sink, signal, (completed) => {
-                  this.emit({ ...ids, type: 'progress', seq: ++progressSeq, stage: 'save', completed, total: event.outputBytes, unit: 'bytes' });
-                });
+                if (signal.aborted) {
+                  await sink.abort();
+                  throw new Error('File save was cancelled');
+                }
+                await writeDirectOutput(
+                  channel.port1,
+                  ids,
+                  event.outputBytes,
+                  sink,
+                  signal,
+                  (completed) => {
+                    this.emit({
+                      ...ids,
+                      type: 'progress',
+                      seq: ++progressSeq,
+                      stage: 'save',
+                      completed,
+                      total: event.outputBytes,
+                      unit: 'bytes',
+                    });
+                  }
+                );
               })();
               void saving.then(() => packed?.()).catch((error: Error) => fail(error));
             } else ports.delete(channel.port1);
           }
           if (single && event.type === 'progress' && event.stage === 'pack') return;
-          if (single && event.type === 'status' && event.stage === 'output') this.emit({ ...event, detail: 'Output prepared for direct save' });
+          if (single && event.type === 'status' && event.stage === 'output')
+            this.emit({ ...event, detail: 'Output prepared for direct save' });
           else this.emit(event);
         };
         const maxPixels =
@@ -518,7 +555,7 @@ export class BatchScheduler {
         workers.delete(worker);
       }
       stage = 'save';
-      jobLabel = 'Archive finalization';
+      jobLabel = single ? 'File finalization' : 'Archive finalization';
       jobDeadline = Date.now() + 30_000;
       if (zipWorker) {
         zipWorker.postMessage({ version: 1, batchId, type: 'finish' } satisfies ZipCommand);
@@ -526,7 +563,13 @@ export class BatchScheduler {
       }
       await race(writeChain);
       const archive = await race(sink.close());
-      return { batchId, packaging: single ? 'file' : 'zip', archive, totalFiles: files.length, results: completedResults };
+      return {
+        batchId,
+        packaging: single ? 'file' : 'zip',
+        archive,
+        totalFiles: files.length,
+        results: completedResults,
+      };
     } catch (error) {
       for (const worker of workers) worker.terminate();
       for (const port of ports) port.close();

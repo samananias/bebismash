@@ -62,14 +62,15 @@ for (const size of [100 * 1024, 500 * 1024, 1024 * 1024, 10 * 1024 * 1024]) {
     await page
       .getByLabel('Choose files', { exact: true })
       .setInputFiles({ name: 'noise.png', mimeType: 'image/png', buffer: source.buffer });
-    await page.getByRole('button', { name: 'Smash into ZIP' }).click();
-    await expect(page.getByRole('link', { name: 'Download ZIP' })).toBeVisible({ timeout: 60000 });
+    await page.getByRole('button', { name: 'Compress file' }).click();
+    await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 60000 });
     await page.getByText('What’s happening?', { exact: false }).click();
     await expect(page.getByLabel('Compression engine assets')).toContainText('Ready');
     const download = page.waitForEvent('download');
-    await page.getByRole('link', { name: 'Download ZIP' }).click();
-    const archive = unzipSync(new Uint8Array(await readFile((await (await download).path())!)));
-    const data = archive['noise.png']!;
+    await page.getByRole('link', { name: 'Download file' }).click();
+    const saved = await download;
+    expect(saved.suggestedFilename()).toBe('noise.png');
+    const data = new Uint8Array(await readFile((await saved.path())!));
     expect(data).toBeDefined();
     const dimensions = await page.evaluate(async (base64) => {
       const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
@@ -91,14 +92,14 @@ test('WASM download failure surfaces details and retry succeeds', async ({ page 
   await page
     .getByLabel('Choose files', { exact: true })
     .setInputFiles({ name: 'retry.png', mimeType: 'image/png', buffer: png(100000).buffer });
-  await page.getByRole('button', { name: 'Smash into ZIP' }).click();
+  await page.getByRole('button', { name: 'Compress file' }).click();
   await expect(page.getByRole('alert')).toContainText(/503|worker.*failed|execution deadline/i, {
     timeout: 35000,
   });
-  await expect(page.getByRole('link', { name: 'Download ZIP' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Download file' })).toHaveCount(0);
   await page.unroute('**/*.wasm');
   await page.getByRole('button', { name: 'Retry batch' }).click();
-  await expect(page.getByRole('link', { name: 'Download ZIP' })).toBeVisible({ timeout: 20000 });
+  await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 20000 });
 });
 test('multiple media files retain independent results and ZIP entries', async ({ page }) => {
   await page.goto('/');
@@ -123,7 +124,7 @@ test('unsupported recognized image fails with an actionable error', async ({ pag
     mimeType: 'image/png',
     buffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
   });
-  await page.getByRole('button', { name: 'Smash into ZIP' }).click();
+  await page.getByRole('button', { name: 'Compress file' }).click();
   await expect(page.getByRole('alert')).toContainText('INVALID_INPUT');
   await expect(page.getByRole('button', { name: 'Retry batch' })).toBeVisible();
 });
@@ -146,7 +147,7 @@ test('stalled processing exposes real frame count, Wait, and cancellation', asyn
   await page
     .getByLabel('Choose files', { exact: true })
     .setInputFiles({ name: 'slow.txt', mimeType: 'text/plain', buffer: Buffer.from('test') });
-  await page.getByRole('button', { name: 'Smash into ZIP' }).click();
+  await page.getByRole('button', { name: 'Compress file' }).click();
   await expect(page.locator('.job-detail')).toContainText('18,420 frames processed');
   await expect(page.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
   await page.clock.fastForward(31000);
@@ -204,15 +205,16 @@ for (const moving of [false, true])
       mimeType: 'video/webm',
       buffer: Buffer.from(sample, 'base64'),
     });
-    await page.getByRole('button', { name: 'Smash into ZIP' }).click();
-    await expect(page.getByRole('link', { name: 'Download ZIP' })).toBeVisible({ timeout: 30000 });
+    await page.getByRole('button', { name: 'Compress file' }).click();
+    await expect(page.getByRole('link', { name: 'Download file' })).toBeVisible({ timeout: 30000 });
     await page.getByText('What’s happening?', { exact: false }).click();
     await expect(page.locator('.job-details')).toContainText('Mediabunny / WebCodecs');
     await expect(page.locator('.job-details')).toContainText('160 × 120');
     const download = page.waitForEvent('download');
-    await page.getByRole('link', { name: 'Download ZIP' }).click();
-    const archive = unzipSync(new Uint8Array(await readFile((await (await download).path())!)));
-    const output = Object.values(archive)[0]!;
+    await page.getByRole('link', { name: 'Download file' }).click();
+    const saved = await download;
+    expect(saved.suggestedFilename()).toBe('sample.webm');
+    const output = new Uint8Array(await readFile((await saved.path())!));
     const dimensions = await page.evaluate(async (base64) => {
       const blob = new Blob(
         [Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))],

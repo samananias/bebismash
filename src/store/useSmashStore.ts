@@ -331,12 +331,12 @@ export const useSmashStore = create<SmashState>((set, get) => ({
               event.stage === 'save'
                 ? 'Writing output file'
                 : event.stage === 'pack'
-                ? 'Sending output to ZIP worker'
-                : event.stage === 'transform'
-                  ? event.unit === 'frames'
-                    ? 'Processing video frames'
-                    : 'Processing video timeline'
-                  : 'Processing; percentage unavailable';
+                  ? 'Sending output to ZIP worker'
+                  : event.stage === 'transform'
+                    ? event.unit === 'frames'
+                      ? 'Processing video frames'
+                      : 'Processing video timeline'
+                    : 'Processing; percentage unavailable';
           } else if (event.type === 'asset') {
             const previous = next.assets[event.name];
             if (
@@ -367,8 +367,12 @@ export const useSmashStore = create<SmashState>((set, get) => ({
             next.lastProgressAt = now;
             next.detail =
               event.disposition === 'original'
-                ? state.order.length === 1 ? 'Original retained; preparing download' : 'Original retained; packaging without media compression'
-                : state.order.length === 1 ? 'Output prepared; saving file' : 'Output prepared; packaging ZIP';
+                ? state.order.length === 1
+                  ? 'Original retained; preparing download'
+                  : 'Original retained; packaging without media compression'
+                : state.order.length === 1
+                  ? 'Output prepared; saving file'
+                  : 'Output prepared; packaging ZIP';
           } else if (event.type === 'error') {
             next.error = event.error;
             next.status = 'failed';

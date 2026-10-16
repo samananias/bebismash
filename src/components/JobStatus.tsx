@@ -55,7 +55,9 @@ export function JobStatus({
         : file.status === 'cancelled'
           ? 'Cancelled · ready to retry'
           : file.stage
-            ? singleFile && file.stage === 'save' ? 'Saving file' : labels[file.stage]
+            ? singleFile && file.stage === 'save'
+              ? 'Saving file'
+              : labels[file.stage]
             : 'Ready to start';
   const measure =
     file.total !== null && file.total > 0
@@ -97,9 +99,11 @@ export function JobStatus({
       {active && (
         <p className="job-next">
           Next:{' '}
-          {singleFile ? 'Prepare output → Ready to save' : file.stage === 'pack'
-            ? 'Finalize archive → Ready to save'
-            : 'Prepare output → Package ZIP → Ready to save'}
+          {singleFile
+            ? 'Prepare output → Ready to save'
+            : file.stage === 'pack'
+              ? 'Finalize archive → Ready to save'
+              : 'Prepare output → Package ZIP → Ready to save'}
           . Files stay on your device.
         </p>
       )}

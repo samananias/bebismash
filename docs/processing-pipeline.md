@@ -12,6 +12,10 @@
 
 These are code-confirmed failure paths, not a diagnosis of a supplied user recording or original private video. No private fixtures were available.
 
+## Single-file delivery update
+
+[ADR 0004](adr/0004-direct-single-file-output.md) adds direct output for one selected file. The scheduler skips the ZIP worker, receives the prepared result through the same credited transferable port, writes the selected sink using the output filename/MIME, and grants each next credit only after that write resolves. The UI shows saving-file progress and Download file. Multiple-file runs follow the ZIP lifecycle below. Generic/unsupported direct files retain their original bytes and extension.
+
 ## Lifecycle after the fix
 
 | Phase                         | Execution and visible evidence                                                           | Completion / failure condition                                                  |

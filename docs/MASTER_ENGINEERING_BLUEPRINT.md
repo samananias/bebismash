@@ -4,6 +4,8 @@ Status: implementation contract, 2026-10-16. Input: [foundation.md](foundation.m
 
 The repository currently contains the concept and these planning documents. Code blocks below are implementation templates, not installed or runtime-verified application files. Infrastructure identifiers must be provisioned before deployment. Commands named here are the required future package-script contract.
 
+Single-file delivery update: [ADR 0004](adr/0004-direct-single-file-output.md) supersedes ZIP-only output below for a single selected file. One file saves directly in its resulting format; multiple files use the ZIP bundler. The direct receiver grants transferable chunk credit only after sink acceptance. All existing codec, memory, cancellation and privacy boundaries still apply.
+
 ## 1. Architecture decisions and scope
 
 ### 1.1 Locked stack
