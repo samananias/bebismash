@@ -1,7 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import type { DragEvent } from 'react';
 import type { Intensity } from './core/types';
 import { useSmashStore } from './store/useSmashStore';
 import { TelemetryBadge } from './components/TelemetryBadge';
+import { PixelArt } from './components/PixelArt';
+
+function formatBytes(bytes: number) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const index = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / 1024 ** index).toFixed(index ? 2 : 0)} ${units[index]}`;
+}
+
+function UploadIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <path
+        d="M24 8h16v8h8v8h8v24h-8v8H16v-8H8V24h8v-8h8V8Z"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path d="M32 44V24m-8 8 8-8 8 8" stroke="currentColor" strokeWidth="4" />
+    </svg>
+  );
+}
 
 export default function App() {
   const {
@@ -10,7 +32,6 @@ export default function App() {
     files,
     intensity,
     queuedBytes,
-    hardware,
     download,
     errorMessage,
     stageFiles,
@@ -21,299 +42,328 @@ export default function App() {
     cancelSmash,
     reset,
   } = useSmashStore();
-
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [isSecure, setIsSecure] = useState(false);
-  const [isIsolated, setIsIsolated] = useState(false);
-  const [hasSab, setHasSab] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setIsSecure(window.isSecureContext);
-    setIsIsolated(window.crossOriginIsolated);
-    setHasSab(typeof SharedArrayBuffer !== 'undefined');
-  }, []);
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      stageFiles(Array.from(e.dataTransfer.files));
-    }
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const busy = [
+    'validating',
+    'awaiting-confirmation',
+    'running',
+    'finalizing',
+    'cancelling',
+  ].includes(phase);
+  const complete = phase === 'complete';
+  const editable = !busy && !complete;
+  const drop = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    if (editable) stageFiles(Array.from(event.dataTransfer.files));
   };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      stageFiles(Array.from(e.target.files));
-      e.target.value = '';
-    }
-  };
-
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-  };
-
+  const phaseLabel =
+    phase === 'running'
+      ? 'Processing locally…'
+      : phase === 'cancelling'
+        ? 'Cancelling batch…'
+        : phase === 'cancelled'
+          ? 'Batch cancelled. Your files are ready to retry.'
+          : phase === 'failed'
+            ? 'Batch stopped. Review the error below and retry.'
+            : complete
+              ? 'Your archive is ready.'
+              : order.length
+                ? `${order.length} ${order.length === 1 ? 'file' : 'files'} ready to smash.`
+                : 'Ready when you are.';
+  const savings = complete && download ? queuedBytes - download.bytes : null;
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-between p-6 sm:p-12">
-      {/* Header */}
-      <header className="w-full max-w-5xl flex items-center justify-between py-4 border-b border-slate-800">
-        <div className="flex items-center space-x-3">
-          <span className="text-2xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-sky-400 to-emerald-400">
-            BebiSmash
+    <div className="workspace">
+      <a href="#workspace" className="skip-link">
+        Skip to files
+      </a>
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="BebiSmash home">
+          <span className="brand-mark" aria-hidden="true">
+            b.
           </span>
-          <span className="text-xs px-2.5 py-0.5 rounded-full font-mono bg-indigo-950/80 text-indigo-300 border border-indigo-800">
-            v0.1.0 • M4 Edge & Release
+          <span>
+            bebismash<small>LESS BYTES. MORE PLAY.</small>
           </span>
-        </div>
-
-        <div className="flex items-center space-x-2 text-xs font-mono">
-          <span
-            className={`inline-flex items-center px-2 py-1 rounded-md border ${
-              isIsolated
-                ? 'bg-emerald-950/60 border-emerald-800 text-emerald-400'
-                : 'bg-amber-950/60 border-amber-800 text-amber-400'
-            }`}
-          >
-            {isIsolated ? '● Isolated' : '○ Non-Isolated'}
-          </span>
-        </div>
+        </a>
+        <span className="top-status">
+          <span className="status-dot" /> LOCAL BY DESIGN
+        </span>
       </header>
-
-      {/* Main Container */}
-      <div className="w-full max-w-5xl my-8 flex flex-col items-center">
-        {/* Hero Title */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-slate-900 border border-slate-800 text-slate-300 mb-4">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            Private In-Memory Stream Packaging
+      <main id="workspace">
+        <section className="intro">
+          <div>
+            <h1>
+              A little lighter.
+              <br />
+              <em>A lot more room.</em>
+            </h1>
+            <p>A tidy space for smaller files. All on your device.</p>
           </div>
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mb-2">
-            Zero-Upload File Smasher & Bundler
-          </h1>
-          <p className="text-slate-400 text-sm max-w-lg mx-auto">
-            Package and compress your files directly in your browser. All data remains inside your
-            device memory and streams straight to disk or download.
-          </p>
-        </div>
-
-        {/* Dropzone Area */}
-        <section
-          aria-label="File upload dropzone"
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragOver(true);
-          }}
-          onDragLeave={() => setIsDragOver(false)}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={`w-full max-w-3xl p-8 rounded-2xl border-2 border-dashed transition-all cursor-pointer flex flex-col items-center justify-center text-center ${
-            isDragOver
-              ? 'border-indigo-400 bg-indigo-950/30'
-              : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'
-          }`}
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileChange}
-          />
-          <div className="h-12 w-12 rounded-full bg-indigo-950/80 border border-indigo-800 flex items-center justify-center text-indigo-400 text-xl mb-3">
-            📦
+          <div className="intro-art">
+            <PixelArt scene={2} />
+            <span>A FEW PIXELS OF PEACE.</span>
           </div>
-          <p className="text-sm font-semibold text-slate-200">
-            Drag and drop files here, or click to browse
-          </p>
-          <p className="text-xs text-slate-500 mt-1">
-            Zero upload. Files are processed locally using transferable Web Worker streams.
-          </p>
         </section>
-
-        {/* Controls and Queue */}
-        {order.length > 0 && (
-          <div className="w-full max-w-3xl mt-6 p-6 rounded-2xl bg-slate-900/60 border border-slate-800">
-            {/* Header controls */}
-            <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
-              <div>
-                <span className="text-sm font-semibold text-slate-200">
-                  Queue ({order.length} {order.length === 1 ? 'file' : 'files'})
-                </span>
-                <span className="text-xs text-slate-400 ml-2 font-mono">
-                  Total: {formatBytes(queuedBytes)}
-                </span>
-              </div>
-
-              {/* Intensity Picker */}
-              <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs font-medium">
-                {(['gentle', 'balanced', 'heavy'] as Intensity[]).map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => setIntensity(level)}
-                    className={`px-3 py-1 rounded-md capitalize transition-colors ${
-                      intensity === level
-                        ? 'bg-indigo-600 text-white'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {level}
-                  </button>
-                ))}
-              </div>
+        <section
+          aria-label="Add files"
+          className={`upload-panel ${dragging ? 'dragging' : ''}`}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (editable) setDragging(true);
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+              setDragging(false);
+          }}
+          onDrop={drop}
+        >
+          <div className="panel-top">
+            <span>DROP ZONE</span>
+            <span>IMAGES / VIDEO / DOCUMENTS / MORE</span>
+          </div>
+          <div className="drop-content">
+            <div className="upload-icon">
+              <UploadIcon />
             </div>
-
-            {/* File List */}
-            <ul className="divide-y divide-slate-800/60 my-4 max-h-60 overflow-y-auto pr-1">
+            <h2>{dragging ? 'Let those files go.' : 'Room for your files.'}</h2>
+            <p>Drag files here, or pick a few.</p>
+            <button
+              className="pixel-button primary"
+              disabled={!editable}
+              onClick={() => fileInput.current?.click()}
+            >
+              Choose files <span aria-hidden="true">↗</span>
+            </button>
+            <small>
+              {complete
+                ? 'Start a new batch to add more files.'
+                : 'Compress supported files. Package the rest.'}
+            </small>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              hidden
+              aria-label="Choose files"
+              disabled={!editable}
+              onChange={(event) => {
+                if (event.target.files) stageFiles(Array.from(event.target.files));
+                event.target.value = '';
+              }}
+            />
+          </div>
+          <p className="privacy-line">Your files stay on your device.</p>
+        </section>
+        <section className="controls" aria-label="Compression settings">
+          <div className="preset-group" role="group" aria-label="Compression intensity">
+            {(['gentle', 'balanced', 'heavy'] as Intensity[]).map((level) => (
+              <button
+                key={level}
+                aria-pressed={level === intensity}
+                disabled={!editable}
+                onClick={() => setIntensity(level)}
+              >
+                {level.charAt(0).toUpperCase() + level.slice(1)}
+              </button>
+            ))}
+          </div>
+          <p className="preset-note">
+            {intensity === 'gentle'
+              ? 'Fidelity first. A softer squeeze.'
+              : intensity === 'heavy'
+                ? 'Smaller files. More visible tradeoffs.'
+                : 'A happy medium of quality and size.'}
+          </p>
+          {complete ? (
+            <button className="pixel-button" onClick={reset}>
+              New batch <span aria-hidden="true">↻</span>
+            </button>
+          ) : busy ? (
+            <button
+              className="pixel-button"
+              disabled={phase === 'cancelling'}
+              onClick={() => void cancelSmash()}
+            >
+              Cancel batch <span aria-hidden="true">×</span>
+            </button>
+          ) : (
+            <button
+              className="pixel-button"
+              disabled={!order.length}
+              onClick={() => void startSmash()}
+            >
+              {phase === 'failed' || phase === 'cancelled' ? 'Retry batch' : 'Smash into ZIP'}{' '}
+              <span aria-hidden="true">→</span>
+            </button>
+          )}
+          <small className="capability-note">
+            Lossy formats may change appearance. PNG uses lossless optimization.
+          </small>
+        </section>
+        <section className="results" aria-labelledby="files-heading" aria-busy={busy}>
+          <div className="results-heading">
+            <h2 id="files-heading">
+              Your files <span className="count">{String(order.length).padStart(2, '0')}</span>
+            </h2>
+            <button
+              className="text-button"
+              disabled={!editable || !order.length}
+              onClick={clearQueue}
+            >
+              Clear files <span aria-hidden="true">×</span>
+            </button>
+          </div>
+          {order.length ? (
+            <ul className="file-list">
               {order.map((id) => {
                 const file = files[id];
                 if (!file) return null;
+                const packed = file.status === 'packed';
+                const reduction =
+                  packed && file.outputBytes !== null && file.originalBytes > 0
+                    ? Math.max(0, Math.round((1 - file.outputBytes / file.originalBytes) * 100))
+                    : 0;
+                const extension = file.name.includes('.')
+                  ? file.name.split('.').pop()?.slice(0, 7).toUpperCase()
+                  : 'FILE';
                 return (
-                  <li key={id} className="py-2.5 flex items-center justify-between text-xs">
-                    <div className="flex items-center space-x-3 truncate">
-                      <span className="text-slate-400">📄</span>
-                      <span className="font-medium text-slate-200 truncate max-w-xs sm:max-w-md">
-                        {file.name}
-                      </span>
+                  <li className="file-row" key={id}>
+                    <div className="file-symbol" aria-hidden="true">
+                      <svg viewBox="0 0 40 48" fill="none">
+                        <path
+                          d="M6 2h20l10 10v34H6V2Zm20 0v12h10M13 24h16M13 31h16"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                        />
+                      </svg>
+                      <span>{extension || 'FILE'}</span>
                     </div>
-                    <div className="flex items-center space-x-3 ml-4 shrink-0 font-mono text-slate-400">
-                      <span>{formatBytes(file.originalBytes)}</span>
-                      {phase === 'idle' && (
-                        <button
-                          type="button"
-                          onClick={() => removeFile(id)}
-                          className="text-rose-400 hover:text-rose-300 ml-2 text-base leading-none"
-                          title="Remove file"
-                        >
-                          ×
-                        </button>
-                      )}
+                    <div className="file-details">
+                      <div className="file-title">
+                        <h3 title={file.name}>{file.name}</h3>
+                        {editable && (
+                          <button
+                            className="remove-button"
+                            aria-label={`Remove ${file.name}`}
+                            onClick={() => removeFile(id)}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <div className="file-metrics">
+                        <span>{formatBytes(file.originalBytes)}</span>
+                        <span aria-hidden="true">→</span>
+                        <strong>
+                          {packed && file.outputBytes !== null
+                            ? formatBytes(file.outputBytes)
+                            : '—'}
+                        </strong>
+                        {packed && (
+                          <span className="saving">{reduction ? `−${reduction}%` : 'PACKED'}</span>
+                        )}
+                      </div>
+                      <div
+                        className={`block-progress ${busy ? 'processing' : ''}`}
+                        role="progressbar"
+                        aria-label={`${file.name} batch status`}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={busy ? undefined : packed ? 100 : 0}
+                        aria-valuetext={
+                          busy
+                            ? 'Processing; progress unavailable'
+                            : packed
+                              ? 'Packed'
+                              : file.status
+                        }
+                      >
+                        {Array.from({ length: 20 }, (_, i) => (
+                          <span key={i} className={packed ? 'filled' : ''} />
+                        ))}
+                      </div>
+                      <p className="file-caption">
+                        {packed
+                          ? reduction
+                            ? 'PACKED · SMALLER OUTPUT'
+                            : 'PACKED · ORIGINAL SIZE'
+                          : busy
+                            ? 'PROCESSING LOCALLY'
+                            : file.status === 'cancelled'
+                              ? 'CANCELLED · READY TO RETRY'
+                              : file.status === 'failed'
+                                ? 'STOPPED · READY TO RETRY'
+                                : 'QUEUED · KEPT ON YOUR DEVICE'}
+                      </p>
                     </div>
                   </li>
                 );
               })}
             </ul>
-
-            {/* Actions Bar */}
-            <div className="flex items-center justify-between pt-4 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={clearQueue}
-                disabled={phase === 'running'}
-                className="text-xs text-slate-400 hover:text-slate-200 disabled:opacity-50 transition-colors"
-              >
-                Clear All
-              </button>
-
-              <div className="flex items-center space-x-3">
-                {phase === 'running' ? (
-                  <button
-                    type="button"
-                    onClick={cancelSmash}
-                    className="px-4 py-2 text-xs font-semibold rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white transition-colors"
-                  >
-                    Cancel Batch
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={startSmash}
-                    disabled={order.length === 0}
-                    className="px-5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 disabled:opacity-50 transition-colors"
-                  >
-                    Pack into ZIP Archive
-                  </button>
-                )}
-              </div>
+          ) : (
+            <div className="empty-state">
+              <span className="empty-pixels" aria-hidden="true">
+                [ ]
+              </span>
+              <p>A clean slate. Add a few files to get started.</p>
+              <small>Nothing is uploaded. No account needed.</small>
             </div>
-          </div>
-        )}
-
-        {/* Status / Error Notifications */}
-        {errorMessage && (
-          <div className="w-full max-w-3xl mt-4 p-4 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs">
-            <strong>Error:</strong> {errorMessage}
-          </div>
-        )}
-
-        {/* Download Ready Card */}
-        {download && download.ready && (
-          <div className="w-full max-w-3xl mt-6 p-6 rounded-2xl bg-emerald-950/40 border border-emerald-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+          )}
+        </section>
+        <section className="batch-summary" aria-label="Batch summary">
+          <div>
+            <span className="summary-icon" aria-hidden="true">
+              ↘
+            </span>
             <div>
-              <div className="flex items-center space-x-2">
-                <span className="text-emerald-400 text-lg">✓</span>
-                <span className="text-sm font-semibold text-emerald-300">
-                  Archive Ready: {download.name}
-                </span>
-              </div>
-              <p className="text-xs text-emerald-400/80 mt-1 font-mono">
-                Total Archive Size: {formatBytes(download.bytes)}
+              <strong>
+                {savings !== null
+                  ? savings > 0
+                    ? `${formatBytes(savings)} less to carry.`
+                    : 'Your files, neatly packaged.'
+                  : order.length
+                    ? `${formatBytes(queuedBytes)} in your queue.`
+                    : 'Make a little room.'}
+              </strong>
+              <p>
+                {download?.ready
+                  ? `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
+                  : 'Actual savings appear when your archive is ready.'}
               </p>
             </div>
-
-            <div className="flex items-center space-x-3">
-              <button
-                type="button"
-                onClick={reset}
-                className="px-3 py-1.5 text-xs text-slate-300 hover:text-white"
-              >
-                New Batch
-              </button>
-              {download.url && (
-                <a
-                  href={download.url}
-                  download={download.name}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 transition-colors inline-flex items-center space-x-1"
-                >
-                  <span>Download ZIP</span>
-                  <span>↓</span>
-                </a>
-              )}
-            </div>
+          </div>
+          {download?.ready && download.url ? (
+            <a
+              className="pixel-button primary download-button"
+              href={download.url}
+              download={download.name}
+            >
+              Download ZIP <span aria-hidden="true">↓</span>
+            </a>
+          ) : (
+            <button className="pixel-button primary download-button" disabled>
+              {download?.kind === 'disk' ? 'Saved to disk' : 'Download ZIP'}{' '}
+              <span aria-hidden="true">↓</span>
+            </button>
+          )}
+        </section>
+        <p className="live-message" role="status">
+          {phaseLabel}
+        </p>
+        {errorMessage && (
+          <div className="error-message" role="alert">
+            <strong>Couldn’t finish this batch.</strong>
+            <p>{errorMessage}</p>
+            <span>Your original files are still available. Remove a file or retry.</span>
           </div>
         )}
-
-        {/* Hardware Status Footer */}
-        {hardware && (
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-3 text-xs text-slate-400 font-mono">
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              Tier: <strong className="text-slate-200">{hardware.tier}</strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              Slots: <strong className="text-slate-200">{hardware.maxWorkers}</strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              Blob Cap:{' '}
-              <strong className="text-slate-200">
-                {(hardware.blobLimitBytes / (1024 * 1024)).toFixed(0)} MB
-              </strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              FileSystem:{' '}
-              <strong className="text-slate-200">
-                {hardware.fileSystemSink ? 'Available' : 'Unsupported'}
-              </strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              SecureContext: <strong className="text-slate-200">{isSecure ? 'Yes' : 'No'}</strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              SAB:{' '}
-              <strong className="text-slate-200">{hasSab ? 'Available' : 'Unavailable'}</strong>
-            </span>
-          </div>
-        )}
-      </div>
-
-      {/* Footer */}
-      <footer className="w-full max-w-5xl py-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-        <div>BebiSmash • Zero-Upload Architecture • In-Browser Processing</div>
+      </main>
+      <footer>
+        <span>BUILT FOR YOUR FILES. KEPT ON YOUR DEVICE.</span>
         <TelemetryBadge />
       </footer>
-    </main>
+    </div>
   );
 }

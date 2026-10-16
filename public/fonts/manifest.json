@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "file": "silkscreen-regular.ttf",
+      "source": "https://fonts.gstatic.com/s/silkscreen/v6/m8JXjfVPf62XiF7kO-i9ULQ.ttf",
+      "sha256": "734e6faa40fb5566327330d5b9b6e52fcc5d52ee91f0da1fe696ca33c5f7d258",
+      "license": "silkscreen-OFL.txt",
+      "licenseType": "OFL-1.1"
+    },
+    {
+      "file": "space-mono-bold.ttf",
+      "source": "https://fonts.gstatic.com/s/spacemono/v17/i7dMIFZifjKcF5UAWdDRaPpZYFI.ttf",
+      "sha256": "5be2b984cdb8befc8ad1871d10f1aa8337f7d2bae3c6bf0ce720d0745ac1a8ec",
+      "license": "space-mono-OFL.txt",
+      "licenseType": "OFL-1.1"
+    },
+    {
+      "file": "space-mono-regular.ttf",
+      "source": "https://fonts.gstatic.com/s/spacemono/v17/i7dPIFZifjKcF5UAWdDRUEY.ttf",
+      "sha256": "829aad32ab9525358de2a7ebc718d05a6b335e67421aad5e1e09cd1fa796af4e",
+      "license": "space-mono-OFL.txt",
+      "licenseType": "OFL-1.1"
+    }
+  ]
+}

@@ -81,6 +81,19 @@ export interface SmashState {
 
 // Local File Handle Registry outside of Zustand store state
 const fileRegistry = new Map<JobId, File>();
+let runVersion = 0;
+const activePhases: SmashState['phase'][] = [
+  'validating',
+  'awaiting-confirmation',
+  'running',
+  'finalizing',
+  'cancelling',
+];
+const canEdit = (state: SmashState) =>
+  !activePhases.includes(state.phase) && state.phase !== 'complete';
+const releaseDownload = (state: SmashState) => {
+  if (state.download?.url) URL.revokeObjectURL(state.download.url);
+};
 
 export const useSmashStore = create<SmashState>((set, get) => ({
   phase: 'idle',
@@ -100,6 +113,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
 
   stageFiles: (newFiles: readonly File[]) => {
     const state = get();
+    if (!canEdit(state)) return;
     const updatedFiles = { ...state.files };
     const updatedOrder = [...state.order];
     let addedBytes = 0;
@@ -136,6 +150,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
   },
 
   removeFile: (id: JobId) => {
+    if (!canEdit(get())) return;
     fileRegistry.delete(id);
     const state = get();
     const file = state.files[id];
@@ -150,6 +165,9 @@ export const useSmashStore = create<SmashState>((set, get) => ({
   },
 
   clearQueue: () => {
+    if (!canEdit(get())) return;
+    runVersion++;
+    releaseDownload(get());
     fileRegistry.clear();
     set({
       files: {},
@@ -158,10 +176,14 @@ export const useSmashStore = create<SmashState>((set, get) => ({
       download: null,
       phase: 'idle',
       errorMessage: null,
+      summary: null,
+      completedEntries: 0,
+      archiveBytes: 0,
     });
   },
 
   setIntensity: (intensity: Intensity) => {
+    if (!canEdit(get())) return;
     set({ intensity });
   },
 
@@ -171,6 +193,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
 
   startSmash: async () => {
     const state = get();
+    if (!canEdit(state)) return;
     const fileList: File[] = [];
     for (const id of state.order) {
       const file = fileRegistry.get(id);
@@ -179,19 +202,45 @@ export const useSmashStore = create<SmashState>((set, get) => ({
 
     if (fileList.length === 0) return;
 
+    const version = ++runVersion;
+    releaseDownload(state);
+
     set({
       phase: 'running',
       errorMessage: null,
       download: null,
+      files: Object.fromEntries(
+        state.order.map((id) => [
+          id,
+          { ...state.files[id]!, status: 'running' as const, outputBytes: null, progress: null },
+        ])
+      ),
     });
 
     try {
       const { scheduler } = await import('../services/scheduler');
+      if (version !== runVersion) return;
       const result = await scheduler.processBatch(fileList, state.intensity);
+      if (version !== runVersion) {
+        if (result.archive.url) URL.revokeObjectURL(result.archive.url);
+        return;
+      }
       set({
         phase: 'complete',
         batchId: result.batchId,
         archiveBytes: result.archive.bytes,
+        completedEntries: result.totalFiles,
+        files: Object.fromEntries(
+          state.order.map((id, index) => [
+            id,
+            {
+              ...state.files[id]!,
+              status: 'packed' as const,
+              outputBytes: result.results[index]?.compressedBytes ?? null,
+              progress: 100,
+            },
+          ])
+        ),
         download: {
           name: result.archive.name,
           bytes: result.archive.bytes,
@@ -201,27 +250,59 @@ export const useSmashStore = create<SmashState>((set, get) => ({
         },
       });
 
-      if (state.telemetryConsent && result.results && result.results.length > 0) {
-        const { submitTelemetryBatch } = await import('../services/telemetry');
-        submitTelemetryBatch(result.results, true);
+      if (get().telemetryConsent && result.results && result.results.length > 0) {
+        void import('../services/telemetry')
+          .then(({ submitTelemetryBatch }) => {
+            if (get().telemetryConsent) return submitTelemetryBatch(result.results, true);
+          })
+          .catch(() => {});
       }
     } catch (err: unknown) {
+      if (version !== runVersion) return;
       const message = err instanceof Error ? err.message : 'Processing failed';
       set({
         phase: 'failed',
         errorMessage: message,
+        files: Object.fromEntries(
+          state.order.map((id) => [
+            id,
+            { ...state.files[id]!, status: 'failed' as const, progress: null },
+          ])
+        ),
       });
     }
   },
 
   cancelSmash: async () => {
+    if (!activePhases.includes(get().phase) || get().phase === 'cancelling') return;
+    const version = ++runVersion;
     set({ phase: 'cancelling' });
-    const { scheduler } = await import('../services/scheduler');
-    await scheduler.cancel();
-    set({ phase: 'cancelled' });
+    try {
+      const { scheduler } = await import('../services/scheduler');
+      await scheduler.cancel();
+      if (version === runVersion)
+        set((state) => ({
+          phase: 'cancelled',
+          files: Object.fromEntries(
+            state.order.map((id) => [
+              id,
+              { ...state.files[id]!, status: 'cancelled' as const, progress: null },
+            ])
+          ),
+        }));
+    } catch {
+      if (version === runVersion)
+        set({
+          phase: 'failed',
+          errorMessage: 'Could not cancel this batch. Reload the page to stop processing.',
+        });
+    }
   },
 
   reset: () => {
+    if (activePhases.includes(get().phase)) return;
+    runVersion++;
+    releaseDownload(get());
     fileRegistry.clear();
     set({
       phase: 'idle',

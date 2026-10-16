@@ -36,29 +36,18 @@ export function TelemetryBadge() {
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-slate-400">
-        {stats && stats.total_files_smashed > 0 ? (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-            Community-reported savings:{' '}
-            <strong className="text-emerald-400 font-mono">
-              {formatMB(stats.total_bytes_saved)} MB
-            </strong>{' '}
+      <div className="telemetry">
+        {stats ? (
+          <span>
+            Community-reported savings: <strong>{formatMB(stats.total_bytes_saved)} MB</strong>{' '}
             across {stats.total_files_smashed.toLocaleString()} files
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-sky-400"></span>
-            Community-reported savings: Live ticker ready
-          </span>
+          <span>Community-reported savings: unavailable</span>
         )}
 
-        <button
-          type="button"
-          onClick={() => setIsPrivacyOpen(true)}
-          className="text-slate-400 hover:text-indigo-400 underline decoration-dotted transition-colors cursor-pointer"
-        >
-          [?] Privacy & Telemetry
+        <button type="button" onClick={() => setIsPrivacyOpen(true)} className="privacy-link">
+          Privacy & telemetry
         </button>
       </div>
 
