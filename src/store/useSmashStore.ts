@@ -66,12 +66,14 @@ export interface SmashState {
     url?: string | undefined;
   } | null;
   errorMessage: string | null;
+  telemetryConsent: boolean;
 
   // Actions
   stageFiles: (fileList: readonly File[]) => void;
   removeFile: (id: JobId) => void;
   clearQueue: () => void;
   setIntensity: (intensity: Intensity) => void;
+  setTelemetryConsent: (value: boolean) => void;
   startSmash: () => Promise<void>;
   cancelSmash: () => Promise<void>;
   reset: () => void;
@@ -94,6 +96,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
   summary: null,
   download: null,
   errorMessage: null,
+  telemetryConsent: false,
 
   stageFiles: (newFiles: readonly File[]) => {
     const state = get();
@@ -162,6 +165,10 @@ export const useSmashStore = create<SmashState>((set, get) => ({
     set({ intensity });
   },
 
+  setTelemetryConsent: (value: boolean) => {
+    set({ telemetryConsent: value });
+  },
+
   startSmash: async () => {
     const state = get();
     const fileList: File[] = [];
@@ -193,6 +200,11 @@ export const useSmashStore = create<SmashState>((set, get) => ({
           url: result.archive.url,
         },
       });
+
+      if (state.telemetryConsent && result.results && result.results.length > 0) {
+        const { submitTelemetryBatch } = await import('../services/telemetry');
+        submitTelemetryBatch(result.results, true);
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Processing failed';
       set({

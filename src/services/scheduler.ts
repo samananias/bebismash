@@ -14,10 +14,21 @@ import { BlobArchiveSink } from './sink';
 
 export type SchedulerEventListener = (event: WorkerEvent | ZipEvent) => void;
 
+export interface CompletedFileResult {
+  extension: string;
+  category: 'image' | 'video' | 'document' | 'archive' | 'other';
+  intensity: Intensity;
+  originalBytes: number;
+  compressedBytes: number;
+  durationMs: number;
+  deviceTier: 'constrained' | 'standard' | 'high';
+}
+
 export interface BatchResult {
   batchId: BatchId;
   archive: ArchiveSinkResult;
   totalFiles: number;
+  results: CompletedFileResult[];
 }
 
 export class BatchScheduler {
@@ -134,6 +145,7 @@ export class BatchScheduler {
                 batchId,
                 archive: archiveResult,
                 totalFiles: files.length,
+                results: completedResults,
               });
             } catch (closeErr) {
               await fail(closeErr as Error);
@@ -152,6 +164,8 @@ export class BatchScheduler {
           expectedEntries: files.length,
         };
         zipWorker.postMessage(openCmd);
+
+        const completedResults: CompletedFileResult[] = [];
 
         // Process files sequentially or up to maxWorkers concurrency
         (async () => {
@@ -226,6 +240,28 @@ export class BatchScheduler {
                 this.emit(wEvent);
 
                 if (wEvent.type === 'result') {
+                  const rawExt = file.name.split('.').pop()?.toLowerCase() || 'other';
+                  const category =
+                    route.engine === 'video'
+                      ? 'video'
+                      : route.engine === 'image'
+                        ? 'image'
+                        : route.format === 'zip'
+                          ? 'archive'
+                          : route.engine === 'generic' || route.format === 'unknown'
+                            ? 'other'
+                            : 'document';
+
+                  completedResults.push({
+                    extension: rawExt,
+                    category,
+                    intensity,
+                    originalBytes: file.size,
+                    compressedBytes: wEvent.outputBytes,
+                    durationMs: wEvent.durationMs,
+                    deviceTier: this.profile.tier,
+                  });
+
                   jobWorker.terminate();
                   this.activeWorkers.delete(jobWorker);
                   jobResolve();

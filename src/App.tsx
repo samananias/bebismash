@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Intensity } from './core/types';
 import { useSmashStore } from './store/useSmashStore';
+import { TelemetryBadge } from './components/TelemetryBadge';
 
 export default function App() {
   const {
@@ -65,7 +66,7 @@ export default function App() {
             BebiSmash
           </span>
           <span className="text-xs px-2.5 py-0.5 rounded-full font-mono bg-indigo-950/80 text-indigo-300 border border-indigo-800">
-            v0.1.0 • M1 Generic Slice
+            v0.1.0 • M4 Edge & Release
           </span>
         </div>
 
@@ -309,8 +310,9 @@ export default function App() {
       </div>
 
       {/* Footer */}
-      <footer className="w-full max-w-5xl py-4 border-t border-slate-800 text-center text-xs text-slate-500">
-        BebiSmash • Zero-Upload Architecture • All computation and compression performed in-browser
+      <footer className="w-full max-w-5xl py-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+        <div>BebiSmash • Zero-Upload Architecture • In-Browser Processing</div>
+        <TelemetryBadge />
       </footer>
     </main>
   );
