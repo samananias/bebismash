@@ -6,11 +6,14 @@ import type {
   Intensity,
   ImagePolicy,
   DocumentPolicy,
+  VideoPolicy,
 } from './types';
 import {
   calculateGenericReservation,
   calculateImageReservation,
   calculateOfficeReservation,
+  calculatePdfReservation,
+  calculateVideoStreamingReservation,
 } from './hardware';
 
 export interface SniffResult {
@@ -165,7 +168,7 @@ export async function sniffFile(file: File): Promise<SniffResult> {
 
 /**
  * Creates routing decision based on sniffed format and current intensity.
- * In Milestone M2, images and OOXML documents are routed to their specialized engines.
+ * In Milestone M3, images, OOXML, PDF, and video formats route to their specialized engines.
  */
 export function decideRoute(
   sniffResult: SniffResult,
@@ -203,6 +206,28 @@ export function decideRoute(
     };
   }
 
+  if (sniffResult.format === 'pdf') {
+    return {
+      format: 'pdf',
+      category: 'document',
+      engine: 'officePdf',
+      disposition: 'transform',
+      reservationBytes: calculatePdfReservation(sourceBytes),
+      reasonKey: 'm3_pdf_adapter',
+    };
+  }
+
+  if (sniffResult.engine === 'video') {
+    return {
+      format: sniffResult.format,
+      category: sniffResult.category,
+      engine: 'video',
+      disposition: 'transform',
+      reservationBytes: calculateVideoStreamingReservation(1920, 1080),
+      reasonKey: 'm3_video_adapter',
+    };
+  }
+
   return {
     format: sniffResult.format,
     category: sniffResult.category,
@@ -218,9 +243,9 @@ export function decideRoute(
  */
 export function createEnginePolicy(
   engine: Engine,
-  format: Format,
+  _format: Format,
   intensity: Intensity
-): ImagePolicy | DocumentPolicy | { kind: 'generic'; level: 0 | 4 | 6 | 9 } {
+): ImagePolicy | DocumentPolicy | VideoPolicy | { kind: 'generic'; level: 0 | 4 | 6 | 9 } {
   if (engine === 'image') {
     switch (intensity) {
       case 'heavy':
@@ -296,6 +321,45 @@ export function createEnginePolicy(
       pdfMode: 'rewrite',
       targetDpi: null,
     };
+  }
+
+  if (engine === 'video') {
+    switch (intensity) {
+      case 'heavy':
+        return {
+          kind: 'video',
+          mode: 'transcode',
+          maxHeight: 720,
+          maxFps: 30,
+          webVideoBitrate: 1_500_000,
+          audioBitrate: 96_000,
+          ffmpegCrf: 32,
+          ffmpegPreset: 'medium',
+        };
+      case 'balanced':
+        return {
+          kind: 'video',
+          mode: 'transcode',
+          maxHeight: 1080,
+          maxFps: null,
+          webVideoBitrate: 4_000_000,
+          audioBitrate: 128_000,
+          ffmpegCrf: 26,
+          ffmpegPreset: 'medium',
+        };
+      case 'gentle':
+      default:
+        return {
+          kind: 'video',
+          mode: 'remux',
+          maxHeight: null,
+          maxFps: null,
+          webVideoBitrate: 8_000_000,
+          audioBitrate: 192_000,
+          ffmpegCrf: 20,
+          ffmpegPreset: 'medium',
+        };
+    }
   }
 
   return {

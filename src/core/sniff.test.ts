@@ -102,7 +102,33 @@ describe('Format Routing in M2', () => {
     expect(decision.disposition).toBe('transform');
   });
 
-  it('routes unknown formats to generic engine in M2 baseline', () => {
+  it('routes PDF format to officePdf engine with transform disposition', () => {
+    const pdfSniff = {
+      format: 'pdf' as const,
+      category: 'document' as const,
+      engine: 'officePdf' as const,
+      mime: 'application/pdf',
+    };
+    const decision = decideRoute(pdfSniff, 1_000_000, 'balanced');
+    expect(decision.engine).toBe('officePdf');
+    expect(decision.disposition).toBe('transform');
+    expect(decision.reservationBytes).toBeGreaterThan(0);
+  });
+
+  it('routes video formats (mp4, mov, webm) to video engine with transform disposition', () => {
+    const mp4Sniff = {
+      format: 'mp4' as const,
+      category: 'video' as const,
+      engine: 'video' as const,
+      mime: 'video/mp4',
+    };
+    const decision = decideRoute(mp4Sniff, 5_000_000, 'heavy');
+    expect(decision.engine).toBe('video');
+    expect(decision.disposition).toBe('transform');
+    expect(decision.reservationBytes).toBeGreaterThan(0);
+  });
+
+  it('routes unknown formats to generic engine in baseline', () => {
     const sniffResult = {
       format: 'unknown' as const,
       category: 'other' as const,

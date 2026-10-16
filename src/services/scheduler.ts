@@ -177,7 +177,11 @@ export class BatchScheduler {
               route.format === 'avif' ||
               route.format === 'docx' ||
               route.format === 'pptx' ||
-              route.format === 'xlsx';
+              route.format === 'xlsx' ||
+              route.format === 'pdf' ||
+              route.format === 'mp4' ||
+              route.format === 'mov' ||
+              route.format === 'webm';
 
             // Register entry with ZIP worker
             const addCmd: ZipCommand = {
@@ -200,11 +204,15 @@ export class BatchScheduler {
             let workerScriptUrl: URL;
             if (route.engine === 'image') {
               workerScriptUrl = new URL('../workers/image.worker.ts', import.meta.url);
+            } else if (route.format === 'pdf') {
+              workerScriptUrl = new URL('../workers/pdf.worker.ts', import.meta.url);
             } else if (
               route.engine === 'officePdf' &&
               (route.format === 'docx' || route.format === 'pptx' || route.format === 'xlsx')
             ) {
               workerScriptUrl = new URL('../workers/office.worker.ts', import.meta.url);
+            } else if (route.engine === 'video') {
+              workerScriptUrl = new URL('../workers/video.worker.ts', import.meta.url);
             } else {
               workerScriptUrl = new URL('../workers/generic.worker.ts', import.meta.url);
             }
