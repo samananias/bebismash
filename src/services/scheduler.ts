@@ -214,24 +214,33 @@ export class BatchScheduler {
             };
             zipWorker.postMessage(addCmd, [channel.port1]);
 
-            // Dispatch to specialized worker based on engine
-            let workerScriptUrl: URL;
+            // Keep each URL inside its Worker constructor so Vite compiles the worker graph.
+            let jobWorker: Worker;
             if (route.engine === 'image') {
-              workerScriptUrl = new URL('../workers/image.worker.ts', import.meta.url);
+              jobWorker = new Worker(new URL('../workers/image.worker.ts', import.meta.url), {
+                type: 'module',
+              });
             } else if (route.format === 'pdf') {
-              workerScriptUrl = new URL('../workers/pdf.worker.ts', import.meta.url);
+              jobWorker = new Worker(new URL('../workers/pdf.worker.ts', import.meta.url), {
+                type: 'module',
+              });
             } else if (
               route.engine === 'officePdf' &&
               (route.format === 'docx' || route.format === 'pptx' || route.format === 'xlsx')
             ) {
-              workerScriptUrl = new URL('../workers/office.worker.ts', import.meta.url);
+              jobWorker = new Worker(new URL('../workers/office.worker.ts', import.meta.url), {
+                type: 'module',
+              });
             } else if (route.engine === 'video') {
-              workerScriptUrl = new URL('../workers/video.worker.ts', import.meta.url);
+              jobWorker = new Worker(new URL('../workers/video.worker.ts', import.meta.url), {
+                type: 'module',
+              });
             } else {
-              workerScriptUrl = new URL('../workers/generic.worker.ts', import.meta.url);
+              jobWorker = new Worker(new URL('../workers/generic.worker.ts', import.meta.url), {
+                type: 'module',
+              });
             }
 
-            const jobWorker = new Worker(workerScriptUrl, { type: 'module' });
             this.activeWorkers.add(jobWorker);
 
             await new Promise<void>((jobResolve, jobReject) => {

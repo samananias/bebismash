@@ -1,5 +1,11 @@
 # BebiSmash Implementation Progress
 
+## Preview worker packaging fix — 2026-10-16
+
+Cloudflare preview rejected `image.worker-*.ts` as `video/mp2t`. The scheduler passed processing worker URLs through a variable, so Vite emitted raw TypeScript assets. Image, PDF, Office, video and generic dispatch now each use a literal `new Worker(new URL(..., import.meta.url), { type: 'module' })` expression so Vite compiles their worker graphs. Worker creation remains inside job dispatch; codec imports and transfer ownership are unchanged.
+
+Validation: asset preparation and production build passed; all six application workers emit `.js`, with no `.ts` assets in the output. All 71 unit tests, repository formatting, ESLint and TypeScript checks passed using the installed CLI entry points. The pnpm launcher could not fetch its selected version from the npm registry. Browser worker/E2E suites have no configuration in this checkout; deployed preview verification remains required after redeployment.
+
 ## Local tooling update — 2026-10-16
 
 Upgraded Wrangler from 3.114.17 to 4.151.0 and Workers type definitions to 5.20261016.1; see [ADR 0002](adr/0002-wrangler-4-upgrade.md). Pages continues to reject custom configuration paths. No remote resources were changed.
