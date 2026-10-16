@@ -76,8 +76,33 @@ describe('Binary Header Sniffing', () => {
   });
 });
 
-describe('Format Routing in M1', () => {
-  it('routes all formats to generic engine in M1 baseline', () => {
+describe('Format Routing in M2', () => {
+  it('routes images to image engine with transform disposition', () => {
+    const jpegSniff = {
+      format: 'jpeg' as const,
+      category: 'image' as const,
+      engine: 'image' as const,
+      mime: 'image/jpeg',
+    };
+    const decision = decideRoute(jpegSniff, 1024 * 1024, 'balanced');
+    expect(decision.engine).toBe('image');
+    expect(decision.disposition).toBe('transform');
+    expect(decision.reservationBytes).toBeGreaterThan(0);
+  });
+
+  it('routes OOXML formats to officePdf engine with transform disposition', () => {
+    const docxSniff = {
+      format: 'docx' as const,
+      category: 'document' as const,
+      engine: 'officePdf' as const,
+      mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    const decision = decideRoute(docxSniff, 500_000, 'gentle');
+    expect(decision.engine).toBe('officePdf');
+    expect(decision.disposition).toBe('transform');
+  });
+
+  it('routes unknown formats to generic engine in M2 baseline', () => {
     const sniffResult = {
       format: 'unknown' as const,
       category: 'other' as const,

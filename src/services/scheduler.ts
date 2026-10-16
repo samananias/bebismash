@@ -8,7 +8,7 @@ import type {
   WorkerCommand,
 } from '../core/types';
 import { detectHardwareProfile } from '../core/hardware';
-import { sniffFile, decideRoute } from '../core/sniff';
+import { sniffFile, decideRoute, createEnginePolicy } from '../core/sniff';
 import type { IArchiveSink, ArchiveSinkResult } from './sink';
 import { BlobArchiveSink } from './sink';
 
@@ -154,7 +154,6 @@ export class BatchScheduler {
         zipWorker.postMessage(openCmd);
 
         // Process files sequentially or up to maxWorkers concurrency
-        // In M1, process files through generic worker
         (async () => {
           for (let i = 0; i < files.length; i++) {
             if (abortSignal.aborted) return;
@@ -165,9 +164,20 @@ export class BatchScheduler {
 
             const sniffResult = await sniffFile(file);
             const route = decideRoute(sniffResult, file.size, intensity);
+            const policy = createEnginePolicy(route.engine, route.format, intensity);
 
-            // Channel between Generic Worker and Zip Worker
+            // Channel between Job Worker and Zip Worker
             const channel = new MessageChannel();
+
+            const isAlreadyCompressed =
+              route.format === 'zip' ||
+              route.format === 'jpeg' ||
+              route.format === 'png' ||
+              route.format === 'webp' ||
+              route.format === 'avif' ||
+              route.format === 'docx' ||
+              route.format === 'pptx' ||
+              route.format === 'xlsx';
 
             // Register entry with ZIP worker
             const addCmd: ZipCommand = {
@@ -178,36 +188,52 @@ export class BatchScheduler {
                 entryId,
                 jobId,
                 path: file.name,
-                method: route.format === 'zip' ? 'store' : 'deflate',
-                level: 6,
+                method: isAlreadyCompressed ? 'store' : 'deflate',
+                level: intensity === 'heavy' ? 9 : intensity === 'balanced' ? 6 : 4,
                 maxBytes: file.size,
               },
               entryPort: channel.port1,
             };
             zipWorker.postMessage(addCmd, [channel.port1]);
 
-            // Spawn generic worker
-            const genericWorker = new Worker(
-              new URL('../workers/generic.worker.ts', import.meta.url),
-              { type: 'module' }
-            );
-            this.activeWorkers.add(genericWorker);
+            // Dispatch to specialized worker based on engine
+            let workerScriptUrl: URL;
+            if (route.engine === 'image') {
+              workerScriptUrl = new URL('../workers/image.worker.ts', import.meta.url);
+            } else if (
+              route.engine === 'officePdf' &&
+              (route.format === 'docx' || route.format === 'pptx' || route.format === 'xlsx')
+            ) {
+              workerScriptUrl = new URL('../workers/office.worker.ts', import.meta.url);
+            } else {
+              workerScriptUrl = new URL('../workers/generic.worker.ts', import.meta.url);
+            }
+
+            const jobWorker = new Worker(workerScriptUrl, { type: 'module' });
+            this.activeWorkers.add(jobWorker);
 
             await new Promise<void>((jobResolve, jobReject) => {
-              genericWorker.onmessage = (workerMsg: MessageEvent<WorkerEvent>) => {
+              jobWorker.onmessage = (workerMsg: MessageEvent<WorkerEvent>) => {
                 const wEvent = workerMsg.data;
                 this.emit(wEvent);
 
                 if (wEvent.type === 'result') {
-                  genericWorker.terminate();
-                  this.activeWorkers.delete(genericWorker);
+                  jobWorker.terminate();
+                  this.activeWorkers.delete(jobWorker);
                   jobResolve();
                 } else if (wEvent.type === 'error') {
-                  genericWorker.terminate();
-                  this.activeWorkers.delete(genericWorker);
+                  jobWorker.terminate();
+                  this.activeWorkers.delete(jobWorker);
                   jobReject(new Error(wEvent.error.code));
                 }
               };
+
+              const maxPixels =
+                this.profile.tier === 'constrained'
+                  ? 12_000_000
+                  : this.profile.tier === 'standard'
+                    ? 24_000_000
+                    : 48_000_000;
 
               const startCmd: WorkerCommand = {
                 version: 1,
@@ -218,16 +244,16 @@ export class BatchScheduler {
                 source: file,
                 sourceMode: 'worker-ranges',
                 config: {
-                  engine: 'generic',
+                  engine: route.engine,
                   format: route.format,
                   intensity,
-                  policy: { kind: 'generic', level: 6 },
+                  policy,
                   limits: {
                     maxInputBytes: 2 * 1024 * 1024 * 1024,
-                    maxOutputBytes: 2 * 1024 * 1024 * 1024,
-                    maxPixels: 24_000_000,
-                    maxExpandedBytes: 256 * 1024 * 1024,
-                    maxEntryBytes: 256 * 1024 * 1024,
+                    maxOutputBytes: this.profile.blobLimitBytes,
+                    maxPixels,
+                    maxExpandedBytes: 200 * 1024 * 1024,
+                    maxEntryBytes: 100 * 1024 * 1024,
                     maxEntries: 1000,
                     maxExpansionRatio: 100,
                     maxWallTimeMs: 60_000,
@@ -237,7 +263,7 @@ export class BatchScheduler {
                 outputPort: channel.port2,
               };
 
-              genericWorker.postMessage(startCmd, [channel.port2]);
+              jobWorker.postMessage(startCmd, [channel.port2]);
             });
           }
 

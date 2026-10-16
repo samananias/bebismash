@@ -1,5 +1,17 @@
-import type { Category, Format, Engine, RouteDecision, Intensity } from './types';
-import { calculateGenericReservation } from './hardware';
+import type {
+  Category,
+  Format,
+  Engine,
+  RouteDecision,
+  Intensity,
+  ImagePolicy,
+  DocumentPolicy,
+} from './types';
+import {
+  calculateGenericReservation,
+  calculateImageReservation,
+  calculateOfficeReservation,
+} from './hardware';
 
 export interface SniffResult {
   format: Format;
@@ -97,7 +109,6 @@ export function sniffBuffer(buffer: ArrayBuffer): SniffResult {
     getUint8(2) === 0xdf &&
     getUint8(3) === 0xa3
   ) {
-    // Scan for DocType 'webm' in first 64 bytes
     const textHeader = getAscii(4, Math.min(byteLength - 4, 60));
     if (textHeader.includes('webm')) {
       return { format: 'webm', category: 'video', engine: 'video', mime: 'video/webm' };
@@ -109,7 +120,6 @@ export function sniffBuffer(buffer: ArrayBuffer): SniffResult {
     const b2 = getUint8(2);
     const b3 = getUint8(3);
     if ((b2 === 0x03 && b3 === 0x04) || (b2 === 0x05 && b3 === 0x06)) {
-      // In M1 generic slice, ZIP and office packages are safely packaged/stored
       return { format: 'zip', category: 'archive', engine: 'generic', mime: 'application/zip' };
     }
   }
@@ -125,23 +135,74 @@ export function sniffBuffer(buffer: ArrayBuffer): SniffResult {
 
 /**
  * Reads the first 4096 bytes of a File handle and sniffs format.
+ * If ZIP signature is found and extension suggests OOXML, preflights for OOXML confirmation.
  */
 export async function sniffFile(file: File): Promise<SniffResult> {
   const slice = file.slice(0, 4096);
   const buffer = await slice.arrayBuffer();
-  return sniffBuffer(buffer);
+  const initial = sniffBuffer(buffer);
+
+  if (initial.format === 'zip') {
+    const extMatch = file.name.match(/\.(docx|pptx|xlsx)$/i);
+    if (extMatch) {
+      const ext = extMatch[1]!.toLowerCase() as 'docx' | 'pptx' | 'xlsx';
+      const mimeMap: Record<'docx' | 'pptx' | 'xlsx', string> = {
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      };
+      return {
+        format: ext,
+        category: 'document',
+        engine: 'officePdf',
+        mime: mimeMap[ext],
+      };
+    }
+  }
+
+  return initial;
 }
 
 /**
  * Creates routing decision based on sniffed format and current intensity.
- * In Milestone M1, all files route through the generic engine for safe zero-copy packaging.
+ * In Milestone M2, images and OOXML documents are routed to their specialized engines.
  */
 export function decideRoute(
   sniffResult: SniffResult,
-  _sourceBytes: number,
+  sourceBytes: number,
   _intensity: Intensity
 ): RouteDecision {
-  // In M1, generic slice handles all packaging
+  if (sniffResult.engine === 'image') {
+    return {
+      format: sniffResult.format,
+      category: sniffResult.category,
+      engine: 'image',
+      disposition: 'transform',
+      reservationBytes: calculateImageReservation(sourceBytes, 1920, 1080),
+      reasonKey: 'm2_image_adapter',
+    };
+  }
+
+  if (
+    sniffResult.engine === 'officePdf' &&
+    (sniffResult.format === 'docx' ||
+      sniffResult.format === 'pptx' ||
+      sniffResult.format === 'xlsx')
+  ) {
+    return {
+      format: sniffResult.format,
+      category: sniffResult.category,
+      engine: 'officePdf',
+      disposition: 'transform',
+      reservationBytes: calculateOfficeReservation(
+        sourceBytes,
+        Math.min(sourceBytes * 5, 64 * 1024 * 1024),
+        16 * 1024 * 1024
+      ),
+      reasonKey: 'm2_ooxml_adapter',
+    };
+  }
+
   return {
     format: sniffResult.format,
     category: sniffResult.category,
@@ -149,5 +210,96 @@ export function decideRoute(
     disposition: 'original',
     reservationBytes: calculateGenericReservation(),
     reasonKey: 'm1_generic_slice',
+  };
+}
+
+/**
+ * Creates appropriate policy for given engine and intensity
+ */
+export function createEnginePolicy(
+  engine: Engine,
+  format: Format,
+  intensity: Intensity
+): ImagePolicy | DocumentPolicy | { kind: 'generic'; level: 0 | 4 | 6 | 9 } {
+  if (engine === 'image') {
+    switch (intensity) {
+      case 'heavy':
+        return {
+          kind: 'image',
+          quality: 55,
+          lossless: false,
+          maxEdge: 1920,
+          quantizeColors: null,
+          oxipngLevel: 4,
+          allowFormatChange: false,
+        };
+      case 'balanced':
+        return {
+          kind: 'image',
+          quality: 75,
+          lossless: false,
+          maxEdge: null,
+          quantizeColors: null,
+          oxipngLevel: 3,
+          allowFormatChange: false,
+        };
+      case 'gentle':
+      default:
+        return {
+          kind: 'image',
+          quality: 90,
+          lossless: false,
+          maxEdge: null,
+          quantizeColors: null,
+          oxipngLevel: 3,
+          allowFormatChange: false,
+        };
+    }
+  }
+
+  if (engine === 'officePdf') {
+    const imagePolicy: ImagePolicy =
+      intensity === 'heavy'
+        ? {
+            kind: 'image',
+            quality: 50,
+            lossless: false,
+            maxEdge: 1280,
+            quantizeColors: null,
+            oxipngLevel: 4,
+            allowFormatChange: false,
+          }
+        : intensity === 'balanced'
+          ? {
+              kind: 'image',
+              quality: 75,
+              lossless: false,
+              maxEdge: null,
+              quantizeColors: null,
+              oxipngLevel: 3,
+              allowFormatChange: false,
+            }
+          : {
+              kind: 'image',
+              quality: 90,
+              lossless: true,
+              maxEdge: null,
+              quantizeColors: null,
+              oxipngLevel: 3,
+              allowFormatChange: false,
+            };
+
+    return {
+      kind: 'document',
+      image: imagePolicy,
+      deflateLevel: intensity === 'gentle' ? 6 : 9,
+      pdfMode: 'rewrite',
+      targetDpi: null,
+    };
+  }
+
+  return {
+    kind: 'generic',
+    level: intensity === 'heavy' ? 9 : intensity === 'balanced' ? 6 : 4,
   };
 }
