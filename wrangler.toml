@@ -1,0 +1,23 @@
+name = "bebismash"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-10-16"
+
+[vars]
+APP_ORIGIN = "https://bebismash.example"
+TELEMETRY_ENABLED = "false"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bebismash-production"
+database_id = "REPLACE_WITH_PRODUCTION_UUID"
+migrations_dir = "migrations"
+
+[env.preview.vars]
+APP_ORIGIN = "https://staging.bebismash.example"
+TELEMETRY_ENABLED = "false"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "bebismash-preview"
+database_id = "REPLACE_WITH_PREVIEW_UUID"
+migrations_dir = "migrations"

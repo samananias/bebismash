@@ -1,0 +1,55 @@
+{
+  "name": "bebismash",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@10.6.2",
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm assets:prepare && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --build tsconfig.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test:unit": "vitest run",
+    "test:workers": "playwright test --config=playwright.workers.config.ts",
+    "test:e2e": "playwright test --config=playwright.config.ts",
+    "db:test": "node scripts/db-test.mjs",
+    "assets:prepare": "node scripts/prepare-assets.mjs",
+    "size:check": "node scripts/check-size.mjs",
+    "infra:check": "node scripts/check-infra.mjs",
+    "smoke:remote": "node scripts/smoke-remote.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.50.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9.20.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.19",
+    "prettier": "^3.5.0",
+    "tailwindcss": "^4.0.0",
+    "terser": "^5.51.2",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.24.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^3.109.0"
+  }
+}
