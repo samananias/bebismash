@@ -1,5 +1,15 @@
 # BebiSmash Implementation Progress
 
+## Pull request verification CI workflow — 2026-10-19
+
+Implemented the automated pull request verification CI workflow at `.github/workflows/ci.yml` in accordance with the blueprint and contributor contract:
+
+- Triggers on `pull_request` (opened, synchronize, reopened), pushes to `main` and `staging`, and manual `workflow_dispatch`.
+- Sets least-privilege `contents: read` permissions and PR concurrency cancellation for superseded commits.
+- Uses pinned full commit SHAs for all third-party GitHub Actions (`actions/checkout@v4.2.2`, `pnpm/action-setup@v4.4.0`, `actions/setup-node@v4.4.0`, `actions/upload-artifact@v4.6.2`).
+- Runs the complete gate suite: `pnpm typecheck`, `pnpm format:check`, `pnpm lint`, `pnpm test:unit`, `pnpm db:test`, `pnpm infra:check`, `pnpm assets:prepare`, `pnpm build`, `pnpm size:check`, and Playwright multi-browser installation (`chromium`, `firefox`, `webkit`) for `pnpm test:workers` and `pnpm test:e2e`.
+- Publishes `dist` artifact on success (3-day retention) and Playwright failure traces (`test-results/`) on failure (7-day retention).
+
 ## PDF compression engine, profiles and supplied-source acceptance — 2026-10-19
 
 Fixed the actual processing path behind the screenshot's unchanged result. Every PDF mode previously requested only structural rewriting; image-quality settings were unused. Added independent bounded lossless stream compression, selective metadata cleanup, proven unreachable-object reclamation and real sequential RGB/gray image encoding/downsampling. Gentle preserves image samples, Balanced uses 150 DPI/Q75, and Heavy uses 96 DPI/Q55. Missing optional references now use PDF null semantics; generic Adobe pdfx metadata no longer falsely declares PDF/X. Parsed signatures/encryption, real conformance identifiers, complete graph inspection, memory admission, cancellation and reopen validation remain. Unsupported metadata stays without canceling independent compression. See [ADR 0008](adr/0008-pdf-stream-and-image-compression.md) and the [complete pipeline, safeguard audit and six-category matrix](pdf-compression-implementation-audit.md).
