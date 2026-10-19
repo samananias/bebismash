@@ -6,6 +6,8 @@
 
 import type { DocumentPolicy, ResourceLimits, PreservationReason } from '../core/types';
 import { materializeStandaloneBuffer } from './types';
+import { createPdfReport, inventoryPdf } from './pdfReport';
+import type { PdfDiagnostics } from '../core/types';
 
 export interface PdfPreflightResult {
   valid: boolean;
@@ -91,6 +93,7 @@ export function preflightPdf(buffer: ArrayBuffer, limits: ResourceLimits): PdfPr
 }
 
 export interface PdfRewriteResult {
+  pdfDiagnostics?: PdfDiagnostics;
   reason?: PreservationReason;
   pdfMetadataRemoved?: number;
   disposition: 'transformed' | 'original';
@@ -110,8 +113,12 @@ export async function rewritePdf(
   const deadline = performance.now() + limits.maxWallTimeMs;
   let pageCount = 0;
   let validation = false;
+  const report = createPdfReport(policy);
+  let phase: PdfDiagnostics['failure'] = 'parse';
+  let encryptionError = (_error: unknown) => false;
   const original = (reason: PreservationReason): PdfRewriteResult => ({
     disposition: 'original',
+    pdfDiagnostics: report,
     reason,
     buffer,
     pageCount,
@@ -134,18 +141,18 @@ export async function rewritePdf(
     },
   };
   const preflight = preflightPdf(buffer, limits);
-  if (!preflight.valid || preflight.isEncrypted || preflight.isSigned)
-    return original(
-      preflight.isEncrypted || preflight.isSigned ? 'protected_document' : 'unsupported_content'
-    );
+  // Byte scans are hints, not proof: a page can literally contain '/Encrypt' or '/ByteRange'.
+  if (!preflight.valid) return original('unsupported_content');
   try {
-    const { PDFDocument, PDFDict, PDFName } = await import('pdf-lib');
+    const { PDFDocument, PDFDict, PDFName, EncryptedPDFError } = await import('pdf-lib');
+    encryptionError = (error) => error instanceof EncryptedPDFError;
     const {
       PdfGraphRefusal,
       walkPdfGraph,
       trailerRoots,
       validatePdfTrailers,
       validateRetainedObjects,
+      normalizePdfNullReferences,
     } = await import('./pdfGraph');
     const loadOptions = {
       ignoreEncryption: false,
@@ -157,13 +164,16 @@ export async function rewritePdf(
     const doc = await PDFDocument.load(buffer, loadOptions);
     await checkpoint();
     pageCount = doc.getPageCount();
+    report.pages = pageCount;
+    inventoryPdf(doc, report);
+    phase = 'graph';
     if (doc.isEncrypted || doc.context.trailerInfo.Encrypt) return original('protected_document');
     let signed = false;
     // Inspect all objects, including compressed, unreachable and nested signatures.
     await walkPdfGraph(
       doc.context,
       doc.context.enumerateIndirectObjects().map(([, object]) => object),
-      budget,
+      { ...budget, allowMissingReferences: true },
       (object) => {
         if (
           object instanceof PDFDict &&
@@ -176,12 +186,41 @@ export async function rewritePdf(
     );
     if (signed) return original('protected_document');
     await validatePdfTrailers(new Uint8Array(buffer), doc.context, budget);
+    report.nullReferencesNormalized = await normalizePdfNullReferences(doc.context, budget);
+    phase = 'conformance';
+    const { inspectPdfConformance } = await import('./pdfMetadata');
+    const conformanceKnown = await inspectPdfConformance(doc, budget);
+    if (!conformanceKnown) {
+      report.failure = 'conformance-unknown';
+      return original('unsupported_content');
+    }
+    phase = 'graph';
     let removed = 0;
     if (policy.pdfMetadata === 'remove-xmp') {
       const { removePdfMetadata } = await import('./pdfMetadata');
-      removed = await removePdfMetadata(doc, budget);
+      removed = await removePdfMetadata(doc, budget, report);
+      report.metadataRemoved = removed;
+      report.metadata = removed
+        ? report.metadataPreserved
+          ? 'partial'
+          : 'removed'
+        : report.metadataPreserved
+          ? 'skipped'
+          : 'preserved';
     }
     const retained = await walkPdfGraph(doc.context, trailerRoots(doc.context), budget);
+    for (const [ref] of doc.context.enumerateIndirectObjects())
+      if (!retained.has(ref)) doc.context.delete(ref);
+    report.objectsRemoved = Math.max(
+      0,
+      report.objects - doc.context.enumerateIndirectObjects().length
+    );
+    const { recompressPdfStreams } = await import('./pdfStreams');
+    await recompressPdfStreams(doc, policy, limits, budget, report);
+    const { optimizePdfImages } = await import('./pdfImages');
+    await optimizePdfImages(doc, policy, limits, budget, report);
+    const finalReferences = await walkPdfGraph(doc.context, trailerRoots(doc.context), budget);
+    phase = 'serialize';
     await checkpoint();
     const saved = await doc.save({
       useObjectStreams: true,
@@ -190,34 +229,51 @@ export async function rewritePdf(
       objectsPerTick: 100,
     });
     await checkpoint();
-    if (saved.byteLength > limits.maxOutputBytes) return original('validation_failed');
+    if (saved.byteLength > limits.maxOutputBytes) {
+      report.validation = 'failed';
+      report.failure = 'serialize';
+      return original('validation_failed');
+    }
     validation = true;
+    phase = 'validation';
     const reopened = await PDFDocument.load(saved, loadOptions);
     await checkpoint();
-    if (reopened.getPageCount() !== pageCount) return original('validation_failed');
+    if (reopened.getPageCount() !== pageCount) {
+      report.validation = 'failed';
+      report.failure = 'validation';
+      return original('validation_failed');
+    }
     try {
       await walkPdfGraph(reopened.context, trailerRoots(reopened.context), budget);
-      await validateRetainedObjects(doc.context, reopened.context, retained, budget);
+      await validateRetainedObjects(doc.context, reopened.context, finalReferences, budget);
     } catch (error) {
-      if (error instanceof PdfGraphRefusal) return original('validation_failed');
+      if (error instanceof PdfGraphRefusal) {
+        report.validation = 'failed';
+        report.failure = 'validation';
+        return original('validation_failed');
+      }
       throw error;
     }
     await checkpoint();
+    report.validation = 'passed';
     if (saved.byteLength >= buffer.byteLength) return original('no_smaller_candidate');
     return {
       disposition: 'transformed',
+      pdfDiagnostics: report,
       buffer: materializeStandaloneBuffer(saved),
       pageCount,
       ...(removed ? { pdfMetadataRemoved: removed } : {}),
     };
   } catch (error) {
     if (isCancelled()) throw new Error('Cancelled', { cause: error });
-    return original(
-      validation
-        ? 'validation_failed'
-        : policy.pdfMetadata === 'remove-xmp'
-          ? 'cleanup_unsupported'
-          : 'unsupported_content'
-    );
+    if (encryptionError(error)) return original('protected_document');
+    report.failure = performance.now() >= deadline ? 'deadline' : phase;
+    if (validation) report.validation = 'failed';
+    const { PdfConformanceRefusal } = await import('./pdfMetadata');
+    if (error instanceof PdfConformanceRefusal) {
+      report.failure = 'conformance';
+      return original('conformance_document');
+    }
+    return original(validation ? 'validation_failed' : 'unsupported_content');
   }
 }

@@ -1,5 +1,33 @@
 import { describe, it, expect } from 'vitest';
 import { sniffBuffer, decideRoute, createEnginePolicy } from './sniff';
+import type { DocumentPolicy } from './types';
+
+it('configures real PDF image profiles independently from Office JPEG policy', () => {
+  const gentle = createEnginePolicy('officePdf', 'pdf', 'gentle') as DocumentPolicy;
+  const balanced = createEnginePolicy('officePdf', 'pdf', 'balanced') as DocumentPolicy;
+  const heavy = createEnginePolicy('officePdf', 'pdf', 'heavy') as DocumentPolicy;
+  expect([gentle.pdfMode, gentle.targetDpi, gentle.image.lossless, gentle.deflateLevel]).toEqual([
+    'rewrite',
+    null,
+    true,
+    6,
+  ]);
+  expect([
+    balanced.pdfMode,
+    balanced.targetDpi,
+    balanced.image.quality,
+    balanced.deflateLevel,
+  ]).toEqual(['image-adapter', 150, 75, 9]);
+  expect([heavy.pdfMode, heavy.targetDpi, heavy.image.quality, heavy.deflateLevel]).toEqual([
+    'image-adapter',
+    96,
+    55,
+    9,
+  ]);
+  expect((createEnginePolicy('officePdf', 'docx', 'heavy') as DocumentPolicy).image.quality).toBe(
+    50
+  );
+});
 
 it.each(['gentle', 'balanced', 'heavy'] as const)(
   'does not authorize PDF cleanup through %s preset',

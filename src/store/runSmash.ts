@@ -109,6 +109,7 @@ export async function runSmash(
           next.outputBytes = event.outputBytes;
           next.disposition = event.disposition;
           next.preservationReason = event.reason;
+          next.pdfDiagnostics = event.pdfDiagnostics;
           next.durationMs = event.durationMs;
           next.status = 'awaiting-pack';
           next.stage = state.order.length === 1 ? 'save' : 'pack';
@@ -156,6 +157,7 @@ export async function runSmash(
             outputBytes: result.results[index]?.compressedBytes ?? null,
             disposition: result.results[index]?.disposition ?? null,
             preservationReason: result.results[index]?.reason,
+            pdfDiagnostics: result.results[index]?.pdfDiagnostics,
             progress: 100,
             detail:
               result.results[index]?.disposition === 'original'
@@ -163,13 +165,17 @@ export async function runSmash(
                   (result.packaging === 'zip'
                     ? ' Original included in ZIP.'
                     : ' No duplicate saved.')
-                : result.results[index]?.pdfMetadataRemoved
-                  ? result.packaging === 'file'
-                    ? 'Smaller PDF ready; embedded metadata removed.'
-                    : 'Smaller PDF included in ZIP; embedded metadata removed.'
-                  : result.packaging === 'file'
-                    ? 'Smaller file ready'
-                    : 'Smaller file included in ZIP',
+                : result.results[index]?.pdfDiagnostics?.metadata === 'partial'
+                  ? `Smaller PDF ${result.packaging === 'zip' ? 'included in ZIP' : 'ready'}; supported metadata removed; other metadata retained.`
+                  : result.results[index]?.pdfDiagnostics?.metadata === 'skipped'
+                    ? `Smaller PDF ${result.packaging === 'zip' ? 'included in ZIP' : 'ready'}; metadata retained.`
+                    : result.results[index]?.pdfMetadataRemoved
+                      ? result.packaging === 'file'
+                        ? 'Smaller PDF ready; embedded metadata removed.'
+                        : 'Smaller PDF included in ZIP; embedded metadata removed.'
+                      : result.packaging === 'file'
+                        ? 'Smaller file ready'
+                        : 'Smaller file included in ZIP',
           },
         ])
       ),

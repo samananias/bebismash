@@ -9,15 +9,18 @@ import type {
   Stage,
   PreservationReason,
   DocumentPolicy,
+  PdfDiagnostics,
 } from '../core/types';
 import { detectHardwareProfile } from '../core/hardware';
 import { sniffFile, decideRoute, createEnginePolicy } from '../core/sniff';
 import type { IArchiveSink, ArchiveSinkResult } from './sink';
 import { BlobArchiveSink } from './sink';
 import { writeDirectOutput } from './directOutput';
+import { validPdfDiagnostics } from '../core/pdfDiagnostics';
 
 export type SchedulerEventListener = (event: WorkerEvent | ZipEvent) => void;
 export interface CompletedFileResult {
+  pdfDiagnostics?: PdfDiagnostics | undefined;
   pdfMetadataRemoved?: number | undefined;
   reason?: PreservationReason | undefined;
   disposition: 'original' | 'transformed';
@@ -252,6 +255,12 @@ export class BatchScheduler {
         const route = decideRoute(sniff, file.size, intensity);
         const overhead = 32 * 1024 * 1024;
         const available = this.profile.memoryBudgetBytes - overhead - 2 * retainedBytes;
+        // Reserve sequential image working memory in addition to the full PDF parser/candidate.
+        const pdfImageWorkingBytes =
+          route.format === 'pdf' && intensity !== 'gentle'
+            ? Math.max(0, Math.min(128 * 1024 * 1024, available - route.reservationBytes))
+            : 0;
+        route.reservationBytes += pdfImageWorkingBytes;
         // Range-read video retains bounded output, not the entire source. Reserve copies too.
         const candidateCap =
           route.engine === 'video'
@@ -440,6 +449,7 @@ export class BatchScheduler {
                   'no_smaller_candidate',
                   'validation_failed',
                   'cleanup_unsupported',
+                  'conformance_document',
                   'protected_document',
                 ].includes(event.reason)) ||
               (event.pdfMetadataRemoved !== undefined &&
@@ -448,7 +458,9 @@ export class BatchScheduler {
                   event.disposition !== 'transformed' ||
                   !Number.isSafeInteger(event.pdfMetadataRemoved) ||
                   event.pdfMetadataRemoved < 1 ||
-                  event.pdfMetadataRemoved > 100_000))
+                  event.pdfMetadataRemoved > 100_000)) ||
+              (event.pdfDiagnostics !== undefined &&
+                (route.format !== 'pdf' || !validPdfDiagnostics(event.pdfDiagnostics)))
             ) {
               fail(new Error('Invalid or duplicate worker result'));
               return;
@@ -460,6 +472,7 @@ export class BatchScheduler {
                 : (event.reason ?? (generic ? 'unsupported_content' : 'no_smaller_candidate'));
             }
             completedResults.push({
+              pdfDiagnostics: event.pdfDiagnostics,
               pdfMetadataRemoved: event.pdfMetadataRemoved,
               disposition: event.disposition,
               reason: event.reason,
@@ -576,6 +589,7 @@ export class BatchScheduler {
                 ...(route.format === 'pdf' && !generic ? { pdfMetadata } : {}),
               },
               limits: {
+                ...(route.format === 'pdf' && !generic ? { pdfImageWorkingBytes } : {}),
                 maxInputBytes:
                   route.engine === 'video'
                     ? file.size

@@ -109,6 +109,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
       loading.ready();
       streamPrepared(cmd, finalBuffer, {
+        ...(rewriteResult.pdfDiagnostics ? { pdfDiagnostics: rewriteResult.pdfDiagnostics } : {}),
         disposition: rewriteResult.disposition,
         ...(rewriteResult.reason ? { reason: rewriteResult.reason } : {}),
         ...(rewriteResult.pdfMetadataRemoved

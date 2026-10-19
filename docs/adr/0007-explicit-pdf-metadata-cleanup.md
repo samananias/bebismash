@@ -4,6 +4,8 @@ Date: 2026-10-19 (Asia/Manila)
 Status: implemented for the supported subset; local-sample compatibility and release gates remain open
 Owner: Core/integration, sequential Media and UI integration
 
+Update (2026-10-19): [ADR 0008](0008-pdf-stream-and-image-compression.md) supersedes blanket missing-reference/unsupported-association refusal and closes the local supplied-source acceptance benchmark. Metadata consent and selective association boundaries remain. The decisions and measurements below describe the first increment.
+
 ## Context
 
 The PDF investigation found a large metadata contribution, but its permissive experiment detached arbitrary Metadata keys. That experiment is insufficient authority to delete ambiguous associations in application output. Metadata can carry provenance, history and rights information; stronger compression presets do not authorize its removal.

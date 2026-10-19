@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { submitTelemetryBatch } from './telemetry';
 import type { TelemetryReportItem } from './telemetry';
+import { createPdfReport } from '../core/pdfDiagnostics';
+import { createEnginePolicy } from '../core/sniff';
+import type { DocumentPolicy } from '../core/types';
 const item = (overrides: Partial<TelemetryReportItem> = {}): TelemetryReportItem => ({
   disposition: 'transformed',
   extension: 'jpeg',
@@ -73,6 +76,9 @@ describe('Foreground aggregate telemetry', () => {
           extension: 'pdf',
           category: 'document',
           pdfMetadataRemoved: 42,
+          pdfDiagnostics: createPdfReport(
+            createEnginePolicy('officePdf', 'pdf', 'heavy') as DocumentPolicy
+          ),
           reason: 'cleanup_unsupported',
         }),
       ],
@@ -87,7 +93,17 @@ describe('Foreground aggregate telemetry', () => {
       'outcome',
       'output_bytes',
     ]);
-    expect(JSON.stringify(body)).not.toMatch(/metadata|cleanup|reason|42/);
+    // UUIDs can incidentally contain "42"; assert content against aggregate fields.
+    expect(body.buckets).toEqual([
+      {
+        format: 'pdf',
+        outcome: 'compressed',
+        file_count: 1,
+        input_bytes: 5 * 1024 ** 3,
+        output_bytes: 2 * 1024 ** 3,
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/metadata|cleanup|reason|Diagnostics|imageSkips/);
   });
   it.each(['no consent', 'offline', 'hidden', 'invalid', 'expanded', 'too many', 'too large'])(
     'does not submit: %s',

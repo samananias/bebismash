@@ -1,6 +1,7 @@
 import type { PreservationReason } from './types';
 
 const messages: Record<PreservationReason, string> = {
+  conformance_document: 'Archival or print-conformance constraints require preserving this PDF.',
   memory_limit: 'Compression exceeds this device’s safe memory budget.',
   unsupported_content: 'Compression is not supported for this content.',
   unsupported_codec: 'The browser cannot encode this media configuration.',

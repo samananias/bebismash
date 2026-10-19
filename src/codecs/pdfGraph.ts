@@ -17,6 +17,8 @@ import type { PDFContext, PDFObject } from 'pdf-lib';
 export class PdfGraphRefusal extends Error {}
 
 export interface GraphBudget {
+  /** Inspection only: PDF null semantics are normalized before transformation/GC. */
+  allowMissingReferences?: boolean;
   checkpoint: () => Promise<void>;
   maxNodes: number;
   maxEdges: number;
@@ -37,7 +39,7 @@ export async function walkPdfGraph(
   roots: PDFObject[],
   budget: GraphBudget,
   visit: (object: PDFObject) => void = () => {},
-  skipMetadata = false
+  skipMetadata: boolean | ReadonlySet<PDFDict> = false
 ): Promise<Set<PDFRef>> {
   const seen = new Set<PDFObject>();
   const references = new Set<PDFRef>();
@@ -55,13 +57,23 @@ export async function walkPdfGraph(
     if (object instanceof PDFRef) {
       references.add(object);
       const target = context.lookup(object);
-      if (!target) throw new PdfGraphRefusal('Unresolved reference');
+      if (!target) {
+        if (budget.allowMissingReferences) continue;
+        throw new PdfGraphRefusal('Unresolved reference');
+      }
       children = [target];
     } else if (object instanceof PDFRawStream) children = [object.dict];
     else if (object instanceof PDFDict) {
       children = object
         .entries()
-        .filter(([key]) => !skipMetadata || key !== metadataKey)
+        .filter(
+          ([key]) =>
+            key !== metadataKey ||
+            !(
+              skipMetadata === true ||
+              (typeof skipMetadata !== 'boolean' && skipMetadata.has(object))
+            )
+        )
         .map(([, value]) => value);
     } else if (object instanceof PDFArray) children = object.asArray();
     else if (!primitive(object)) throw new PdfGraphRefusal('Unsupported graph object');
@@ -71,6 +83,41 @@ export async function walkPdfGraph(
   }
   await budget.checkpoint();
   return references;
+}
+
+/** ISO 32000-2 7.3.9: a nonexistent indirect object is null. Materialize that value
+ * before allocating new object numbers, preserving semantics and avoiding accidental reuse.
+ * Required catalog/page structure is still checked by parsing and page enumeration.
+ */
+export async function normalizePdfNullReferences(
+  context: PDFContext,
+  budget: GraphBudget
+): Promise<number> {
+  let count = 0;
+  await walkPdfGraph(
+    context,
+    context.enumerateIndirectObjects().map(([, object]) => object),
+    budget,
+    (object) => {
+      if (object instanceof PDFDict) {
+        for (const [key, value] of object.entries()) {
+          if (value instanceof PDFRef && !context.lookup(value)) {
+            object.set(key, PDFNull);
+            count++;
+          }
+        }
+      } else if (object instanceof PDFArray) {
+        for (let i = 0; i < object.size(); i++) {
+          const value = object.get(i);
+          if (value instanceof PDFRef && !context.lookup(value)) {
+            object.set(i, PDFNull);
+            count++;
+          }
+        }
+      }
+    }
+  );
+  return count;
 }
 
 export const trailerRoots = (context: PDFContext): PDFObject[] =>

@@ -4,7 +4,12 @@
     "lib": ["ES2022", "WebWorker"],
     "types": []
   },
-  "include": ["src/workers/**/*", "src/codecs/**/*", "src/core/types.ts"],
+  "include": [
+    "src/workers/**/*",
+    "src/codecs/**/*",
+    "src/core/types.ts",
+    "src/core/pdfDiagnostics.ts"
+  ],
   "exclude": [
     "src/components/**/*",
     "src/store/**/*",

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { unzipSync } from 'fflate';
 import { syntheticPdf } from '../../src/codecs/testing/pdfFixture';
 
@@ -85,7 +85,7 @@ test('default PDF rewrite preserves XMP in a mixed ZIP batch', async ({ page }) 
   const archive = unzipSync(new Uint8Array(await readFile((await (await downloading).path())!)));
   const doc = await PDFDocument.load(archive['synthetic.pdf']!);
   const metadata = doc.catalog.lookup(PDFName.of('Metadata')) as PDFRawStream;
-  expect(new TextDecoder().decode(metadata.getContents())).toBe(source.xmp);
+  expect(new TextDecoder().decode(decodePDFRawStream(metadata).decode())).toBe(source.xmp);
   expect(new TextDecoder().decode(archive['original.txt'])).toBe('original');
 });
 
@@ -106,7 +106,7 @@ test('conformance cleanup refusal saves no duplicate single file and retains ori
     page.getByText('Original retained. No duplicate saved.', { exact: true })
   ).toBeVisible({ timeout: 60000 });
   await expect(page.getByRole('link', { name: 'Download file' })).toHaveCount(0);
-  await expect(page.getByText(/Embedded metadata cleanup is unsupported/)).toBeVisible();
+  await expect(page.getByText(/Archival or print-conformance constraints/)).toBeVisible();
   await page.getByRole('button', { name: 'New batch' }).click();
   await page
     .getByLabel('Choose files', { exact: true })

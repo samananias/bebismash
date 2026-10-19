@@ -243,7 +243,7 @@ export function decideRoute(
  */
 export function createEnginePolicy(
   engine: Engine,
-  _format: Format,
+  format: Format,
   intensity: Intensity
 ): ImagePolicy | DocumentPolicy | VideoPolicy | { kind: 'generic'; level: 0 | 4 | 6 | 9 } {
   if (engine === 'image') {
@@ -316,10 +316,24 @@ export function createEnginePolicy(
 
     return {
       kind: 'document',
-      image: imagePolicy,
+      image:
+        format === 'pdf'
+          ? {
+              ...imagePolicy,
+              quality: intensity === 'heavy' ? 55 : imagePolicy.quality,
+              maxEdge: null,
+            }
+          : imagePolicy,
       deflateLevel: intensity === 'gentle' ? 6 : 9,
-      pdfMode: 'rewrite',
-      targetDpi: null,
+      pdfMode: format === 'pdf' && intensity !== 'gentle' ? 'image-adapter' : 'rewrite',
+      targetDpi:
+        format === 'pdf'
+          ? intensity === 'heavy'
+            ? 96
+            : intensity === 'balanced'
+              ? 150
+              : null
+          : null,
     };
   }
 

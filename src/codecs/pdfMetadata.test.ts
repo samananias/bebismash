@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFRawStream, PDFDict, PDFArray, PDFString } from 'pdf-lib';
+import {
+  PDFDocument,
+  PDFName,
+  PDFRef,
+  PDFRawStream,
+  PDFDict,
+  PDFArray,
+  PDFString,
+  decodePDFRawStream,
+} from 'pdf-lib';
 import type { DocumentPolicy, ResourceLimits } from '../core/types';
 import { syntheticPdf } from './testing/pdfFixture';
 import { rewritePdf } from './pdf';
-import { removePdfMetadata } from './pdfMetadata';
+import { inspectPdfConformance, removePdfMetadata } from './pdfMetadata';
 import { walkPdfGraph, trailerRoots, validateRetainedObjects } from './pdfGraph';
 
 const limits: ResourceLimits = {
@@ -36,6 +45,41 @@ const budget = () => ({ checkpoint: async () => {}, maxNodes: 100_000, maxEdges:
 const buffer = (bytes: Uint8Array) => bytes.slice().buffer as ArrayBuffer;
 
 describe('explicit bounded PDF metadata cleanup', () => {
+  it('keeps unreadable component metadata opaque but refuses unknown document conformance, including shared packets', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage();
+    const packet = doc.context.register(
+      doc.context.stream('opaque packet', { Type: 'Metadata', Subtype: 'XML', Filter: 'LZWDecode' })
+    );
+    page.node.set(PDFName.of('Metadata'), packet);
+    expect(await inspectPdfConformance(doc, budget())).toBe(true);
+    doc.catalog.set(PDFName.of('Metadata'), packet);
+    expect(await inspectPdfConformance(doc, budget())).toBe(false);
+  });
+
+  it('accepts indirect Flate filters with explicitly null decode parameters', async () => {
+    const source = await syntheticPdf();
+    const doc = await PDFDocument.load(source.bytes);
+    const packet = doc.context.flateStream('<x:xmpmeta>ordinary metadata</x:xmpmeta>', {
+      Type: 'Metadata',
+      Subtype: 'XML',
+    });
+    packet.dict.set(
+      PDFName.of('Filter'),
+      doc.context.obj([doc.context.register(PDFName.of('FlateDecode'))])
+    );
+    packet.dict.set(PDFName.of('DecodeParms'), doc.context.obj([null]));
+    doc.catalog.set(PDFName.of('Metadata'), doc.context.register(packet));
+    const result = await rewritePdf(
+      buffer(await doc.save({ useObjectStreams: false })),
+      policy(true),
+      limits
+    );
+    expect(result.disposition).toBe('transformed');
+    expect(result.pdfDiagnostics?.metadataRemoved).toBeGreaterThan(0);
+    expect(result.pdfDiagnostics?.validation).toBe('passed');
+  });
+
   it('retains XFA packet arrays and their stored payloads', async () => {
     const source = await syntheticPdf();
     const doc = await PDFDocument.load(source.bytes);
@@ -101,7 +145,7 @@ describe('explicit bounded PDF metadata cleanup', () => {
     bytes.set(marker, at);
     bytes.set(source.bytes.subarray(at), at + marker.length);
     const result = await rewritePdf(buffer(bytes), policy(true), limits);
-    expect(result.reason).toBe('cleanup_unsupported');
+    expect(result.reason).toBe('unsupported_content');
     expect(new Uint8Array(result.buffer)).toEqual(bytes);
   });
 
@@ -125,7 +169,9 @@ describe('explicit bounded PDF metadata cleanup', () => {
       );
       const output = await PDFDocument.load(result.buffer);
       const stream = output.catalog.lookup(PDFName.of('Metadata')) as PDFRawStream;
-      expect(new TextDecoder().decode(stream.getContents())).toBe(source.xmp);
+      expect(new TextDecoder().decode(decodePDFRawStream(stream).decode()) === source.xmp).toBe(
+        true
+      );
       expect(result.pdfMetadataRemoved).toBeUndefined();
     }
   );
@@ -169,12 +215,57 @@ describe('explicit bounded PDF metadata cleanup', () => {
     async (compressed) => {
       const source = await syntheticPdf({ conformance: true, compressed });
       const result = await rewritePdf(buffer(source.bytes), policy(true), limits);
-      expect(result.reason).toBe('cleanup_unsupported');
+      expect(result.reason).toBe('conformance_document');
       expect(new Uint8Array(result.buffer)).toEqual(source.bytes);
     }
   );
 
-  it.each(['wrong-type', 'missing-ref', 'pdfx'])('refuses %s before mutation', async (kind) => {
+  it('retains ambiguous metadata while cleaning independent recognized associations', async () => {
+    const source = await syntheticPdf();
+    const doc = await PDFDocument.load(source.bytes);
+    const unknown = doc.context.register(
+      doc.context.stream('Retained legacy XML', { Subtype: 'XML' })
+    );
+    doc.catalog.set(PDFName.of('Metadata'), unknown);
+    expect(await removePdfMetadata(doc, budget())).toBe(1);
+    expect(doc.catalog.get(PDFName.of('Metadata'))).toBe(unknown);
+    expect(doc.getPage(0).node.has(PDFName.of('Metadata'))).toBe(false);
+    expect(
+      new TextDecoder().decode((doc.context.lookup(unknown) as PDFRawStream).getContents())
+    ).toBe('Retained legacy XML');
+    const result = await rewritePdf(
+      buffer(await doc.save({ updateFieldAppearances: false })),
+      policy(true),
+      limits
+    );
+    expect(result.pdfDiagnostics?.metadata).toBe('skipped');
+    expect(result.pdfDiagnostics?.metadataPreserved).toBe(1);
+    expect(result.pdfDiagnostics?.failure).toBe('none');
+  });
+
+  it('does not confuse Adobe custom pdfx properties with a PDF/X identification claim', async () => {
+    const source = await syntheticPdf();
+    const doc = await PDFDocument.load(source.bytes);
+    doc.catalog.set(
+      PDFName.of('Metadata'),
+      doc.context.register(
+        doc.context.stream(
+          '<x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:pdfx="http://ns.adobe.com/pdfx/1.3/"><pdfx:Custom>Retain</pdfx:Custom></x:xmpmeta>',
+          { Type: 'Metadata', Subtype: 'XML' }
+        )
+      )
+    );
+    const result = await rewritePdf(
+      buffer(await doc.save({ useObjectStreams: false })),
+      policy(),
+      limits
+    );
+    expect(result.disposition).toBe('transformed');
+    expect(result.pdfDiagnostics?.validation).toBe('passed');
+    expect(result.pdfDiagnostics?.failure).toBe('none');
+  });
+
+  it.each(['missing-ref', 'pdfx'])('refuses %s before mutation', async (kind) => {
     const source = await syntheticPdf();
     const doc = await PDFDocument.load(source.bytes);
     if (kind === 'wrong-type')

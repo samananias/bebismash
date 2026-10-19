@@ -3,6 +3,8 @@
 Date: 2026-10-17 (sample comparison added; implementation increment remains dated 2026-10-16)
 Status: First implementation increment; large-output streaming and new codec capabilities remain gated.
 
+Implementation update (2026-10-19): the user subsequently authorized the PDF work. Lossless stream compression, selective metadata cleanup and the supported RGB/gray image adapter are now implemented; see [the implementation audit](pdf-compression-implementation-audit.md), [ADR 0008](adr/0008-pdf-stream-and-image-compression.md) and [progress](progress.md). PDF findings and ordering below describe the earlier investigation; release gates remain as recorded in the newer audit.
+
 Next work is planning only at the user's request. See [the next-day PDF implementation plan](pdf-compression-next-day-plan.md) for 2026-10-18 / the next session. No further implementation is authorized in this planning session.
 
 This revision replaces the earlier proposal's universal savings targets and constant-memory claims. The authoritative engineering constraints are in [the blueprint](MASTER_ENGINEERING_BLUEPRINT.md). Changing implementation status and checks belong in [progress.md](progress.md); contract changes are recorded in [ADR 0006](adr/0006-compression-outcomes-and-bounded-video.md).

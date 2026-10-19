@@ -12,6 +12,7 @@ import type {
   BatchSummary,
   WorkerEvent,
   PreservationReason,
+  PdfDiagnostics,
 } from '../core/types';
 
 export type FileStatus =
@@ -25,6 +26,7 @@ export type FileStatus =
   | 'cancelled';
 
 export interface FileState {
+  pdfDiagnostics?: PdfDiagnostics | undefined;
   preservationReason?: PreservationReason | undefined;
   media?: Extract<WorkerEvent, { type: 'status' }>['media'];
   detail: string;
@@ -256,6 +258,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
             outputBytes: null,
             disposition: null,
             preservationReason: undefined,
+            pdfDiagnostics: undefined,
             progress: null,
             stage: null,
             detail: 'Waiting for worker admission',

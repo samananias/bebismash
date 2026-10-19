@@ -102,6 +102,8 @@ export interface RouteDecision {
 }
 
 export interface ResourceLimits {
+  /** Extra admitted allowance for sequential PDF image decoding/resizing/encoding. */
+  pdfImageWorkingBytes?: number;
   maxInputBytes: number;
   maxOutputBytes: number;
   maxPixels: number;
@@ -184,6 +186,7 @@ export type WorkerCommand =
 
 /** Local result diagnostics; never included in telemetry. */
 export type PreservationReason =
+  | 'conformance_document'
   | 'memory_limit'
   | 'unsupported_content'
   | 'unsupported_codec'
@@ -191,6 +194,69 @@ export type PreservationReason =
   | 'validation_failed'
   | 'cleanup_unsupported'
   | 'protected_document';
+
+/** Bounded local-only PDF evidence. No extracted text, object names or source identifiers. */
+export interface PdfDiagnostics {
+  version: 1;
+  pages: number;
+  objects: number;
+  streams: number;
+  compressedStreams: number;
+  images: number;
+  imageBytes: number;
+  metadataBytes: number;
+  fontBytes: number;
+  otherStreamBytes: number;
+  jpegImages: number;
+  flateImages: number;
+  monochromeImages: number;
+  otherImages: number;
+  rgbImages: number;
+  grayImages: number;
+  cmykImages: number;
+  otherColorImages: number;
+  largestImageWidth: number;
+  largestImageHeight: number;
+  targetDpi: 150 | 96 | null;
+  jpegQuality: number | null;
+  imagesAttempted: number;
+  imagesOptimized: number;
+  imagesDownsampled: number;
+  imageBytesSaved: number;
+  streamsRecompressed: number;
+  streamBytesSaved: number;
+  objectsRemoved: number;
+  nullReferencesNormalized: number;
+  metadataRemoved: number;
+  metadataPreserved: number;
+  metadata: 'preserved' | 'removed' | 'partial' | 'skipped';
+  imageSkips: Partial<
+    Record<
+      | 'gentle'
+      | 'filter'
+      | 'color'
+      | 'mask'
+      | 'features'
+      | 'memory'
+      | 'jpeg_profile'
+      | 'codec'
+      | 'not_smaller',
+      number
+    >
+  >;
+  placementUnknown: number;
+  streamSkips: number;
+  validation: 'not-run' | 'passed' | 'failed';
+  failure:
+    | 'none'
+    | 'parse'
+    | 'graph'
+    | 'conformance'
+    | 'conformance-unknown'
+    | 'serialize'
+    | 'validation'
+    | 'deadline';
+}
 
 export type WorkerEvent =
   | (JobEnvelope & {
@@ -230,6 +296,7 @@ export type WorkerEvent =
       disposition: 'transformed' | 'original';
       reason?: PreservationReason;
       pdfMetadataRemoved?: number;
+      pdfDiagnostics?: PdfDiagnostics;
       outputBytes: number;
       mime: string;
       extension: string;

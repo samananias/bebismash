@@ -81,7 +81,15 @@ describe('scheduler result, packing, failure and cancellation lifecycle', () => 
       const cmd = worker.commands[0] as Extract<WorkerCommand, { type: 'start' }>;
       const refused = size > 1000;
       expect(worker.url.pathname).toContain(refused ? 'generic.worker' : 'pdf.worker');
-      if (!refused) expect(cmd.config.policy).toMatchObject({ pdfMetadata: 'remove-xmp' });
+      if (!refused) {
+        expect(cmd.config.policy).toMatchObject({ pdfMetadata: 'remove-xmp', targetDpi: 96 });
+        const allowance = cmd.config.limits.pdfImageWorkingBytes!;
+        expect(allowance).toBeGreaterThan(0);
+        expect(allowance).toBeLessThan(128 * 1024 * 1024);
+        expect(allowance + 6 * size + 64 * 1024 * 1024 + 32 * 1024 * 1024).toBeLessThanOrEqual(
+          192 * 1024 * 1024
+        );
+      }
       worker.receive({
         version: 1,
         batchId: cmd.batchId,

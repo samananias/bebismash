@@ -166,6 +166,7 @@ export function JobStatus({
             </dd>
             <dt>Memory reservation</dt>
             <dd>{bytes(file.reservedBytes)} estimated; actual browser memory unavailable</dd>
+            {file.pdfDiagnostics && <PdfProcessingDetails report={file.pdfDiagnostics} />}
             <dt>Measured progress</dt>
             <dd>{measure ?? 'Engine does not expose a percentage for this stage'}</dd>
             <dt>Last progress</dt>
@@ -218,3 +219,4 @@ export function JobStatus({
     </div>
   );
 }
+import { PdfProcessingDetails } from './PdfProcessingDetails';
