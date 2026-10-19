@@ -33,7 +33,18 @@ export type Format =
   | 'xlsx'
   | 'zip'
   | 'unknown';
-export type Stage = 'inspect' | 'load' | 'decode' | 'transform' | 'encode' | 'pack';
+export type Stage =
+  | 'inspect'
+  | 'load'
+  | 'init'
+  | 'start'
+  | 'read'
+  | 'decode'
+  | 'transform'
+  | 'encode'
+  | 'output'
+  | 'pack'
+  | 'save';
 export type ErrorCode =
   | 'INVALID_INPUT'
   | 'UNSUPPORTED'
@@ -50,6 +61,7 @@ export interface WireError {
   code: ErrorCode;
   retryable: boolean;
   messageKey: string; // local UI translation key, never raw file/codec text
+  details?: string; // bounded local diagnostics; never included in telemetry
 }
 
 export interface Envelope {
@@ -90,6 +102,8 @@ export interface RouteDecision {
 }
 
 export interface ResourceLimits {
+  /** Extra admitted allowance for sequential PDF image decoding/resizing/encoding. */
+  pdfImageWorkingBytes?: number;
   maxInputBytes: number;
   maxOutputBytes: number;
   maxPixels: number;
@@ -123,6 +137,8 @@ export interface VideoPolicy {
 
 export interface DocumentPolicy {
   kind: 'document';
+  /** Explicit local consent; omission preserves XMP regardless of intensity. */
+  pdfMetadata?: 'preserve' | 'remove-xmp';
   image: ImagePolicy;
   deflateLevel: 6 | 9;
   pdfMode: 'rewrite' | 'image-adapter';
@@ -168,7 +184,103 @@ export type WorkerCommand =
       type: 'cancel';
     });
 
+/** Local result diagnostics; never included in telemetry. */
+export type PreservationReason =
+  | 'conformance_document'
+  | 'memory_limit'
+  | 'unsupported_content'
+  | 'unsupported_codec'
+  | 'no_smaller_candidate'
+  | 'validation_failed'
+  | 'cleanup_unsupported'
+  | 'protected_document';
+
+/** Bounded local-only PDF evidence. No extracted text, object names or source identifiers. */
+export interface PdfDiagnostics {
+  version: 1;
+  pages: number;
+  objects: number;
+  streams: number;
+  compressedStreams: number;
+  images: number;
+  imageBytes: number;
+  metadataBytes: number;
+  fontBytes: number;
+  otherStreamBytes: number;
+  jpegImages: number;
+  flateImages: number;
+  monochromeImages: number;
+  otherImages: number;
+  rgbImages: number;
+  grayImages: number;
+  cmykImages: number;
+  otherColorImages: number;
+  largestImageWidth: number;
+  largestImageHeight: number;
+  targetDpi: 150 | 96 | null;
+  jpegQuality: number | null;
+  imagesAttempted: number;
+  imagesOptimized: number;
+  imagesDownsampled: number;
+  imageBytesSaved: number;
+  streamsRecompressed: number;
+  streamBytesSaved: number;
+  objectsRemoved: number;
+  nullReferencesNormalized: number;
+  metadataRemoved: number;
+  metadataPreserved: number;
+  metadata: 'preserved' | 'removed' | 'partial' | 'skipped';
+  imageSkips: Partial<
+    Record<
+      | 'gentle'
+      | 'filter'
+      | 'color'
+      | 'mask'
+      | 'features'
+      | 'memory'
+      | 'jpeg_profile'
+      | 'codec'
+      | 'not_smaller',
+      number
+    >
+  >;
+  placementUnknown: number;
+  streamSkips: number;
+  validation: 'not-run' | 'passed' | 'failed';
+  failure:
+    | 'none'
+    | 'parse'
+    | 'graph'
+    | 'conformance'
+    | 'conformance-unknown'
+    | 'serialize'
+    | 'validation'
+    | 'deadline';
+}
+
 export type WorkerEvent =
+  | (JobEnvelope & {
+      type: 'status';
+      stage: Stage;
+      detail: string;
+      engine?: string;
+      reservedBytes?: number;
+      media?: {
+        width: number;
+        height: number;
+        videoCodec: string;
+        audioCodec: string;
+        webCodecs: boolean;
+      };
+    })
+  | (JobEnvelope & { type: 'heartbeat' })
+  | (JobEnvelope & {
+      type: 'asset';
+      name: string;
+      state: 'downloading' | 'initializing' | 'ready' | 'cached' | 'failed';
+      completed: number;
+      total: number | null;
+    })
   | (JobEnvelope & { type: 'ready' })
   | (JobEnvelope & { type: 'input-credit'; nextOffset: number; maxBytes: number })
   | (JobEnvelope & {
@@ -182,6 +294,9 @@ export type WorkerEvent =
   | (JobEnvelope & {
       type: 'result';
       disposition: 'transformed' | 'original';
+      reason?: PreservationReason;
+      pdfMetadataRemoved?: number;
+      pdfDiagnostics?: PdfDiagnostics;
       outputBytes: number;
       mime: string;
       extension: string;

@@ -3,21 +3,21 @@ pages_build_output_dir = "./dist"
 compatibility_date = "2026-10-16"
 
 [vars]
-APP_ORIGIN = "https://bebismash.example"
+APP_ORIGIN = "https://bebismash.pages.dev"
 TELEMETRY_ENABLED = "false"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "bebismash-production"
-database_id = "REPLACE_WITH_PRODUCTION_UUID"
+database_id = "6af689a1-3f56-41db-b14a-c7b3748c6723"
 migrations_dir = "migrations"
 
 [env.preview.vars]
-APP_ORIGIN = "https://staging.bebismash.example"
+APP_ORIGIN = "https://staging.bebismash.pages.dev"
 TELEMETRY_ENABLED = "false"
 
 [[env.preview.d1_databases]]
 binding = "DB"
 database_name = "bebismash-preview"
-database_id = "REPLACE_WITH_PREVIEW_UUID"
+database_id = "4b8348ed-d8d6-4afa-a57b-9c07273d16cd"
 migrations_dir = "migrations"

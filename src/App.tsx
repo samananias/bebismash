@@ -1,118 +1,345 @@
-import { useEffect, useState } from 'react';
-import type { HardwareProfile } from './core/types';
-import { detectHardwareProfile } from './core/hardware';
+import { formatBytes } from './core/formatBytes';
+import { useRef, useState, lazy, Suspense } from 'react';
+import type { DragEvent } from 'react';
+import type { Intensity } from './core/types';
+import { useSmashStore } from './store/useSmashStore';
+import { TelemetryBadge } from './components/TelemetryBadge';
+import { LazyBoundary } from './components/LazyBoundary';
+const FileList = lazy(() =>
+  import('./components/FileList').then((module) => ({ default: module.FileList }))
+);
+const SaveToDisk = lazy(() =>
+  import('./components/SaveToDisk').then((module) => ({ default: module.SaveToDisk }))
+);
+import { PixelArt } from './components/PixelArt';
+
+const PdfMetadataOption = lazy(() =>
+  import('./components/PdfMetadataOption').then((module) => ({ default: module.PdfMetadataOption }))
+);
+
+function UploadIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <path
+        d="M24 8h16v8h8v8h8v24h-8v8H16v-8H8V24h8v-8h8V8Z"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path d="M32 44V24m-8 8 8-8 8 8" stroke="currentColor" strokeWidth="4" />
+    </svg>
+  );
+}
 
 export default function App() {
-  const [profile, setProfile] = useState<HardwareProfile | null>(null);
-  const [isSecure, setIsSecure] = useState(false);
-  const [isIsolated, setIsIsolated] = useState(false);
-  const [hasSab, setHasSab] = useState(false);
-
-  useEffect(() => {
-    setIsSecure(window.isSecureContext);
-    setIsIsolated(window.crossOriginIsolated);
-    setHasSab(typeof SharedArrayBuffer !== 'undefined');
-    setProfile(detectHardwareProfile());
-  }, []);
-
+  const {
+    phase,
+    order,
+    files,
+    intensity,
+    queuedBytes,
+    download,
+    errorMessage,
+    stageFiles,
+    removeFile,
+    clearQueue,
+    setIntensity,
+    startSmash,
+    cancelSmash,
+    reset,
+  } = useSmashStore();
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const busy = [
+    'validating',
+    'awaiting-confirmation',
+    'running',
+    'finalizing',
+    'cancelling',
+  ].includes(phase);
+  const singleFile = order.length === 1;
+  const outputLabel = singleFile ? 'file' : 'ZIP';
+  const complete = phase === 'complete';
+  const unchanged = complete && singleFile && !download;
+  const editable = !busy && !complete;
+  const drop = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    if (editable) stageFiles(Array.from(event.dataTransfer.files));
+  };
+  const phaseLabel =
+    phase === 'running'
+      ? 'Processing locally…'
+      : phase === 'cancelling'
+        ? 'Cancelling batch…'
+        : phase === 'cancelled'
+          ? 'Batch cancelled. Your files are ready to retry.'
+          : phase === 'failed'
+            ? 'Batch stopped. Review the error below and retry.'
+            : complete
+              ? unchanged
+                ? 'Original retained. No duplicate saved.'
+                : singleFile
+                  ? 'Your file is ready.'
+                  : 'Your archive is ready.'
+              : order.length
+                ? `${order.length} ${order.length === 1 ? 'file' : 'files'} ready to smash.`
+                : 'Ready when you are.';
+  const savings = unchanged ? 0 : complete && download ? queuedBytes - download.bytes : null;
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-between p-6 sm:p-12">
-      {/* Header */}
-      <header className="w-full max-w-4xl flex items-center justify-between py-4 border-b border-slate-800">
-        <div className="flex items-center space-x-3">
-          <span className="text-2xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-sky-400 to-emerald-400">
-            BebiSmash
+    <div className="workspace">
+      <a href="#workspace" className="skip-link">
+        Skip to files
+      </a>
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="BebiSmash home">
+          <span className="brand-mark" aria-hidden="true">
+            b.
           </span>
-          <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-indigo-950 text-indigo-300 border border-indigo-800">
-            v0.1.0 • M0
+          <span>
+            bebismash<small>LESS BYTES. MORE PLAY.</small>
           </span>
-        </div>
-        <div className="flex items-center space-x-2 text-xs font-mono">
-          <span
-            className={`inline-flex items-center px-2 py-1 rounded-md border ${
-              isIsolated
-                ? 'bg-emerald-950/60 border-emerald-800 text-emerald-400'
-                : 'bg-amber-950/60 border-amber-800 text-amber-400'
-            }`}
-          >
-            {isIsolated ? '● Isolated' : '○ Non-Isolated'}
-          </span>
-        </div>
+        </a>
+        <span className="top-status">
+          <span className="status-dot" /> LOCAL BY DESIGN
+        </span>
       </header>
-
-      {/* Hero / Main Area */}
-      <div className="w-full max-w-4xl my-auto flex flex-col items-center text-center py-12">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-slate-900 border border-slate-800 text-slate-300 mb-6">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          Zero-Upload In-Memory Compression Pipeline
-        </div>
-
-        <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-4">
-          Compress everything locally. <br />
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
-            Not a single byte leaves your device.
-          </span>
-        </h1>
-
-        <p className="max-w-xl text-slate-400 text-base sm:text-lg mb-10">
-          Private, in-browser file smasher powered by WebAssembly and WebCodecs. Images, videos,
-          documents, and archives packed directly to disk.
-        </p>
-
-        {/* Dropzone Skeleton (Prepared for M1) */}
-        <section
-          aria-label="File upload dropzone"
-          className="w-full max-w-2xl p-10 rounded-2xl border-2 border-dashed border-slate-800 bg-slate-900/40 hover:border-indigo-500/50 hover:bg-slate-900/60 transition-all cursor-pointer flex flex-col items-center justify-center space-y-4"
-        >
-          <div className="h-14 w-14 rounded-full bg-indigo-950/80 border border-indigo-800 flex items-center justify-center text-indigo-400 text-2xl">
-            📦
-          </div>
+      <main id="workspace">
+        <section className="intro">
           <div>
-            <p className="text-sm font-semibold text-slate-200">
-              Drag & drop files here, or click to browse
-            </p>
-            <p className="text-xs text-slate-500 mt-1">
-              Supports JPEG, PNG, WebP, AVIF, MP4, WebM, PDF, Office, and ZIP archives
-            </p>
+            <h1>
+              A little lighter.
+              <br />
+              <em>A lot more room.</em>
+            </h1>
+            <p>A tidy space for smaller files. All on your device.</p>
           </div>
-          <button
-            type="button"
-            className="mt-2 px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
-          >
-            Select Files
-          </button>
+          <div className="intro-art">
+            <PixelArt scene={2} />
+            <span>A FEW PIXELS OF PEACE.</span>
+          </div>
         </section>
-
-        {/* Hardware & Diagnostics Profile */}
-        {profile && (
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-3 text-xs text-slate-400 font-mono">
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              Tier: <strong className="text-slate-200">{profile.tier}</strong>
+        <section
+          aria-label="Add files"
+          className={`upload-panel ${dragging ? 'dragging' : ''}`}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (editable) setDragging(true);
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+              setDragging(false);
+          }}
+          onDrop={drop}
+        >
+          <div className="panel-top">
+            <span>DROP ZONE</span>
+            <span>IMAGES / VIDEO / DOCUMENTS / MORE</span>
+          </div>
+          <div className="drop-content">
+            <div className="upload-icon">
+              <UploadIcon />
+            </div>
+            <h2>{dragging ? 'Let those files go.' : 'Room for your files.'}</h2>
+            <p>Drag files here, or pick a few.</p>
+            <button
+              className="pixel-button primary"
+              disabled={!editable}
+              onClick={() => fileInput.current?.click()}
+            >
+              Choose files <span aria-hidden="true">↗</span>
+            </button>
+            <small>
+              {complete
+                ? 'Start a new batch to add more files.'
+                : 'Compress supported files. Package the rest.'}
+            </small>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              hidden
+              aria-label="Choose files"
+              disabled={!editable}
+              onChange={(event) => {
+                if (event.target.files) stageFiles(Array.from(event.target.files));
+                event.target.value = '';
+              }}
+            />
+          </div>
+          <p className="privacy-line">Your files stay on your device.</p>
+        </section>
+        {order.length > 0 && (
+          <LazyBoundary>
+            <Suspense fallback={null}>
+              <PdfMetadataOption editable={editable} />
+            </Suspense>
+          </LazyBoundary>
+        )}
+        <section className="controls" aria-label="Compression settings">
+          <div className="preset-group" role="group" aria-label="Compression intensity">
+            {(['gentle', 'balanced', 'heavy'] as Intensity[]).map((level) => (
+              <button
+                key={level}
+                aria-pressed={level === intensity}
+                disabled={!editable}
+                onClick={() => setIntensity(level)}
+              >
+                {level.charAt(0).toUpperCase() + level.slice(1)}
+              </button>
+            ))}
+          </div>
+          <p className="preset-note">
+            {intensity === 'gentle'
+              ? 'Fidelity first. A softer squeeze.'
+              : intensity === 'heavy'
+                ? 'Smaller files. More visible tradeoffs.'
+                : 'A happy medium of quality and size.'}
+          </p>
+          {!busy && !complete && order.length > 0 && 'showSaveFilePicker' in window && (
+            <LazyBoundary>
+              <Suspense fallback={null}>
+                <SaveToDisk
+                  filename={singleFile ? files[order[0]!]!.name : 'BebiSmash.zip'}
+                  singleFile={singleFile}
+                  startSmash={startSmash}
+                />
+              </Suspense>
+            </LazyBoundary>
+          )}
+          {complete ? (
+            <button className="pixel-button" onClick={reset}>
+              New batch <span aria-hidden="true">↻</span>
+            </button>
+          ) : busy ? (
+            <button
+              className="pixel-button"
+              disabled={phase === 'cancelling'}
+              onClick={() => void cancelSmash()}
+            >
+              Cancel batch <span aria-hidden="true">×</span>
+            </button>
+          ) : (
+            <button
+              className="pixel-button"
+              disabled={!order.length}
+              onClick={() => void startSmash()}
+            >
+              {phase === 'failed' || phase === 'cancelled'
+                ? 'Retry batch'
+                : singleFile
+                  ? 'Compress file'
+                  : 'Smash into ZIP'}{' '}
+              <span aria-hidden="true">→</span>
+            </button>
+          )}
+          <small className="capability-note">
+            Lossy formats may change appearance. PNG uses lossless optimization.
+          </small>
+        </section>
+        <section className="results" aria-labelledby="files-heading" aria-busy={busy}>
+          <div className="results-heading">
+            <h2 id="files-heading">
+              Your files <span className="count">{String(order.length).padStart(2, '0')}</span>
+            </h2>
+            <button
+              className="text-button"
+              disabled={!editable || !order.length}
+              onClick={clearQueue}
+            >
+              Clear files <span aria-hidden="true">×</span>
+            </button>
+          </div>
+          {order.length ? (
+            <LazyBoundary>
+              <Suspense fallback={<p>Opening your file queue…</p>}>
+                <FileList
+                  order={order}
+                  files={files}
+                  editable={editable}
+                  singleFile={singleFile}
+                  complete={complete}
+                  removeFile={removeFile}
+                  cancelSmash={cancelSmash}
+                  startSmash={startSmash}
+                />
+              </Suspense>
+            </LazyBoundary>
+          ) : (
+            <div className="empty-state">
+              <span className="empty-pixels" aria-hidden="true">
+                [ ]
+              </span>
+              <p>A clean slate. Add a few files to get started.</p>
+              <small>Nothing is uploaded. No account needed.</small>
+            </div>
+          )}
+        </section>
+        <section className="batch-summary" aria-label="Batch summary">
+          <div>
+            <span className="summary-icon" aria-hidden="true">
+              ↘
             </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              Workers: <strong className="text-slate-200">{profile.maxWorkers}</strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              Budget:{' '}
-              <strong className="text-slate-200">
-                {(profile.memoryBudgetBytes / (1024 * 1024)).toFixed(0)} MB
+            <div>
+              <strong>
+                {savings !== null
+                  ? savings > 0
+                    ? `${formatBytes(savings)} less to carry.`
+                    : unchanged
+                      ? 'No smaller file saved.'
+                      : singleFile
+                        ? 'Your file is ready.'
+                        : 'Your files, neatly packaged.'
+                  : order.length
+                    ? `${formatBytes(queuedBytes)} in your queue.`
+                    : 'Make a little room.'}
               </strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              SecureContext: <strong className="text-slate-200">{isSecure ? 'Yes' : 'No'}</strong>
-            </span>
-            <span className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
-              SAB:{' '}
-              <strong className="text-slate-200">{hasSab ? 'Available' : 'Unavailable'}</strong>
-            </span>
+              <p>
+                {download?.ready
+                  ? download.packaging === 'file'
+                    ? `${formatBytes(download.bytes)} · ${download.name}`
+                    : `${formatBytes(download.bytes)} ZIP · ${savings !== null && savings < 0 ? `${formatBytes(-savings)} archive overhead` : 'includes archive overhead'}`
+                  : unchanged
+                    ? 'Review the file result above. Your original is unchanged.'
+                    : singleFile
+                      ? 'Actual savings appear when your file is ready.'
+                      : 'Actual savings appear when your archive is ready.'}
+              </p>
+            </div>
+          </div>
+          {download?.ready && download.url ? (
+            <a
+              className="pixel-button primary download-button"
+              href={download.url}
+              download={download.name}
+            >
+              Download {outputLabel} <span aria-hidden="true">↓</span>
+            </a>
+          ) : (
+            <button className="pixel-button primary download-button" disabled>
+              {unchanged
+                ? 'No duplicate saved'
+                : download?.kind === 'disk'
+                  ? 'Saved to disk'
+                  : `Download ${outputLabel}`}{' '}
+              <span aria-hidden="true">↓</span>
+            </button>
+          )}
+        </section>
+        <p className="live-message" role="status">
+          {phaseLabel}
+        </p>
+        {errorMessage && (
+          <div className="error-message" role="alert">
+            <strong>Couldn’t finish this batch.</strong>
+            <p>{errorMessage}</p>
+            <span>Your original files are still available. Remove a file or retry.</span>
           </div>
         )}
-      </div>
-
-      {/* Footer */}
-      <footer className="w-full max-w-4xl py-4 border-t border-slate-800 text-center text-xs text-slate-500">
-        BebiSmash • Private Zero-Upload Architecture • Engineered for Extreme Privacy & Performance
+      </main>
+      <footer>
+        <span>BUILT FOR YOUR FILES. KEPT ON YOUR DEVICE.</span>
+        <TelemetryBadge />
       </footer>
-    </main>
+    </div>
   );
 }
