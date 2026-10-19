@@ -69,6 +69,7 @@ export interface SmashState {
   order: JobId[];
   files: Record<JobId, FileState>;
   intensity: Intensity;
+  pdfMetadata: 'preserve' | 'remove-xmp';
   hardware: HardwareProfile | null;
   reservedBytes: number;
   queuedBytes: number;
@@ -91,6 +92,7 @@ export interface SmashState {
   removeFile: (id: JobId) => void;
   clearQueue: () => void;
   setIntensity: (intensity: Intensity) => void;
+  setPdfMetadata: (value: 'preserve' | 'remove-xmp') => void;
   setTelemetryConsent: (value: boolean) => void;
   startSmash: (sink?: IArchiveSink) => Promise<void>;
   cancelSmash: () => Promise<void>;
@@ -119,6 +121,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
   order: [],
   files: {},
   intensity: 'balanced',
+  pdfMetadata: 'preserve',
   hardware: null,
   reservedBytes: 0,
   queuedBytes: 0,
@@ -213,6 +216,10 @@ export const useSmashStore = create<SmashState>((set, get) => ({
   setIntensity: (intensity: Intensity) => {
     if (!canEdit(get())) return;
     set({ intensity });
+  },
+
+  setPdfMetadata: (pdfMetadata) => {
+    if (canEdit(get())) set({ pdfMetadata });
   },
 
   setTelemetryConsent: (value: boolean) => {
@@ -325,6 +332,7 @@ export const useSmashStore = create<SmashState>((set, get) => ({
     fileRegistry.clear();
     set({
       phase: 'idle',
+      pdfMetadata: 'preserve',
       batchId: null,
       order: [],
       files: {},

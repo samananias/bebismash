@@ -8,6 +8,7 @@ import type {
   WorkerCommand,
   Stage,
   PreservationReason,
+  DocumentPolicy,
 } from '../core/types';
 import { detectHardwareProfile } from '../core/hardware';
 import { sniffFile, decideRoute, createEnginePolicy } from '../core/sniff';
@@ -17,6 +18,7 @@ import { writeDirectOutput } from './directOutput';
 
 export type SchedulerEventListener = (event: WorkerEvent | ZipEvent) => void;
 export interface CompletedFileResult {
+  pdfMetadataRemoved?: number | undefined;
   reason?: PreservationReason | undefined;
   disposition: 'original' | 'transformed';
   extension: string;
@@ -60,21 +62,27 @@ export class BatchScheduler {
     files: File[],
     intensity: Intensity,
     customSink?: IArchiveSink,
-    jobIds?: string[]
+    jobIds?: string[],
+    pdfMetadata: NonNullable<DocumentPolicy['pdfMetadata']> = 'preserve'
   ): Promise<BatchResult> {
     if (this.pending) return Promise.reject(new Error('A batch is already in progress'));
     if (!files.length || files.length > 1000)
       return Promise.reject(new Error('Choose between 1 and 1,000 files.'));
     const controller = new AbortController();
     this.currentAbortController = controller;
-    const pending = this.run(files, intensity, customSink, jobIds, controller.signal).finally(
-      () => {
-        if (this.pending === pending) {
-          this.pending = null;
-          this.currentAbortController = null;
-        }
+    const pending = this.run(
+      files,
+      intensity,
+      customSink,
+      jobIds,
+      controller.signal,
+      pdfMetadata
+    ).finally(() => {
+      if (this.pending === pending) {
+        this.pending = null;
+        this.currentAbortController = null;
       }
-    );
+    });
     this.pending = pending;
     return pending;
   }
@@ -83,7 +91,8 @@ export class BatchScheduler {
     intensity: Intensity,
     customSink: IArchiveSink | undefined,
     jobIds: string[] | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    pdfMetadata: NonNullable<DocumentPolicy['pdfMetadata']>
   ): Promise<BatchResult> {
     const batchId = crypto.randomUUID();
     const single = files.length === 1;
@@ -430,8 +439,16 @@ export class BatchScheduler {
                   'unsupported_codec',
                   'no_smaller_candidate',
                   'validation_failed',
+                  'cleanup_unsupported',
                   'protected_document',
-                ].includes(event.reason))
+                ].includes(event.reason)) ||
+              (event.pdfMetadataRemoved !== undefined &&
+                (route.format !== 'pdf' ||
+                  pdfMetadata !== 'remove-xmp' ||
+                  event.disposition !== 'transformed' ||
+                  !Number.isSafeInteger(event.pdfMetadataRemoved) ||
+                  event.pdfMetadataRemoved < 1 ||
+                  event.pdfMetadataRemoved > 100_000))
             ) {
               fail(new Error('Invalid or duplicate worker result'));
               return;
@@ -443,6 +460,7 @@ export class BatchScheduler {
                 : (event.reason ?? (generic ? 'unsupported_content' : 'no_smaller_candidate'));
             }
             completedResults.push({
+              pdfMetadataRemoved: event.pdfMetadataRemoved,
               disposition: event.disposition,
               reason: event.reason,
               extension: file.name.split('.').pop()?.toLowerCase() ?? 'other',
@@ -553,11 +571,10 @@ export class BatchScheduler {
               engine: generic ? 'generic' : route.engine,
               format: route.format,
               intensity,
-              policy: createEnginePolicy(
-                generic ? 'generic' : route.engine,
-                route.format,
-                intensity
-              ),
+              policy: {
+                ...createEnginePolicy(generic ? 'generic' : route.engine, route.format, intensity),
+                ...(route.format === 'pdf' && !generic ? { pdfMetadata } : {}),
+              },
               limits: {
                 maxInputBytes:
                   route.engine === 'video'

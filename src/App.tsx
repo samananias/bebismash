@@ -13,6 +13,10 @@ const SaveToDisk = lazy(() =>
 );
 import { PixelArt } from './components/PixelArt';
 
+const PdfMetadataOption = lazy(() =>
+  import('./components/PdfMetadataOption').then((module) => ({ default: module.PdfMetadataOption }))
+);
+
 function UploadIcon() {
   return (
     <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
@@ -164,6 +168,13 @@ export default function App() {
           </div>
           <p className="privacy-line">Your files stay on your device.</p>
         </section>
+        {order.length > 0 && (
+          <LazyBoundary>
+            <Suspense fallback={null}>
+              <PdfMetadataOption editable={editable} />
+            </Suspense>
+          </LazyBoundary>
+        )}
         <section className="controls" aria-label="Compression settings">
           <div className="preset-group" role="group" aria-label="Compression intensity">
             {(['gentle', 'balanced', 'heavy'] as Intensity[]).map((level) => (

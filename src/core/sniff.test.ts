@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { sniffBuffer, decideRoute } from './sniff';
+import { sniffBuffer, decideRoute, createEnginePolicy } from './sniff';
+
+it.each(['gentle', 'balanced', 'heavy'] as const)(
+  'does not authorize PDF cleanup through %s preset',
+  (intensity) => {
+    const policy = createEnginePolicy('officePdf', 'pdf', intensity);
+    expect(policy.kind).toBe('document');
+    expect('pdfMetadata' in policy && policy.pdfMetadata === 'remove-xmp').toBe(false);
+  }
+);
 
 describe('Binary Header Sniffing', () => {
   it('identifies JPEG headers', () => {

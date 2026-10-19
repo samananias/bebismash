@@ -131,7 +131,13 @@ export async function runSmash(
         return { batchId: event.batchId, files: { ...current.files, [event.jobId]: next } };
       });
     });
-    const result = await scheduler.processBatch(fileList, state.intensity, sink, state.order);
+    const result = await scheduler.processBatch(
+      fileList,
+      state.intensity,
+      sink,
+      state.order,
+      state.pdfMetadata
+    );
     if (!isCurrent()) {
       if (result.archive?.url) URL.revokeObjectURL(result.archive.url);
       return;
@@ -157,9 +163,13 @@ export async function runSmash(
                   (result.packaging === 'zip'
                     ? ' Original included in ZIP.'
                     : ' No duplicate saved.')
-                : result.packaging === 'file'
-                  ? 'Smaller file ready'
-                  : 'Smaller file included in ZIP',
+                : result.results[index]?.pdfMetadataRemoved
+                  ? result.packaging === 'file'
+                    ? 'Smaller PDF ready; embedded metadata removed.'
+                    : 'Smaller PDF included in ZIP; embedded metadata removed.'
+                  : result.packaging === 'file'
+                    ? 'Smaller file ready'
+                    : 'Smaller file included in ZIP',
           },
         ])
       ),

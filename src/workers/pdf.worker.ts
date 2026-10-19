@@ -82,7 +82,12 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       observation.status('load', 'Loading PDF engine');
       const { rewritePdf } = await import('../codecs/pdf');
       observation.status('transform', 'Rewriting PDF; percentage unavailable');
-      const rewriteResult = await rewritePdf(fullSourceBuffer, docPolicy, config.limits);
+      const rewriteResult = await rewritePdf(
+        fullSourceBuffer,
+        docPolicy,
+        config.limits,
+        () => isCancelled
+      );
       if (isCancelled) throw new Error('Cancelled');
 
       emitWorkerEvent({
@@ -106,6 +111,9 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       streamPrepared(cmd, finalBuffer, {
         disposition: rewriteResult.disposition,
         ...(rewriteResult.reason ? { reason: rewriteResult.reason } : {}),
+        ...(rewriteResult.pdfMetadataRemoved
+          ? { pdfMetadataRemoved: rewriteResult.pdfMetadataRemoved }
+          : {}),
         outputBytes,
         mime: 'application/pdf',
         extension: 'pdf',

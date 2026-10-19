@@ -66,6 +66,29 @@ describe('Foreground aggregate telemetry', () => {
       { format: 'jpg', outcome: 'preserved', file_count: 1, input_bytes: 4096, output_bytes: 4096 },
     ]);
   });
+  it('keeps PDF cleanup counts and reasons out of consented telemetry', async () => {
+    await submitTelemetryBatch(
+      [
+        item({
+          extension: 'pdf',
+          category: 'document',
+          pdfMetadataRemoved: 42,
+          reason: 'cleanup_unsupported',
+        }),
+      ],
+      true
+    );
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string);
+    expect(Object.keys(body).sort()).toEqual(['buckets', 'submission_id', 'version']);
+    expect(Object.keys(body.buckets[0]).sort()).toEqual([
+      'file_count',
+      'format',
+      'input_bytes',
+      'outcome',
+      'output_bytes',
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/metadata|cleanup|reason|42/);
+  });
   it.each(['no consent', 'offline', 'hidden', 'invalid', 'expanded', 'too many', 'too large'])(
     'does not submit: %s',
     async (reason) => {

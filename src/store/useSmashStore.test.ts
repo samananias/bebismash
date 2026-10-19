@@ -39,6 +39,7 @@ describe('Monoterm batch state', () => {
     useSmashStore.getState().reset();
     useSmashStore.getState().setTelemetryConsent(false);
     useSmashStore.getState().setIntensity('balanced');
+    useSmashStore.getState().setPdfMetadata('preserve');
     vi.clearAllMocks();
     mocks.cancel.mockResolvedValue(undefined);
     mocks.subscribe.mockReturnValue(mocks.unsubscribe);
@@ -57,6 +58,30 @@ describe('Monoterm batch state', () => {
     expect(state.files[state.order[0]!]!.status).toBe('packed');
     expect(state.download?.bytes).toBe(120);
     expect(mocks.submit).not.toHaveBeenCalled();
+  });
+  it('propagates explicit PDF cleanup, locks the choice, explains the result and resets consent', async () => {
+    let finish!: (value: BatchResult) => void;
+    mocks.processBatch.mockImplementationOnce(
+      () =>
+        new Promise<BatchResult>((resolve) => {
+          finish = resolve;
+        })
+    );
+    useSmashStore.getState().stageFiles([file()]);
+    useSmashStore.getState().setPdfMetadata('remove-xmp');
+    const pending = useSmashStore.getState().startSmash();
+    await vi.waitFor(() => expect(mocks.processBatch).toHaveBeenCalledOnce());
+    useSmashStore.getState().setPdfMetadata('preserve');
+    expect(useSmashStore.getState().pdfMetadata).toBe('remove-xmp');
+    expect(mocks.processBatch.mock.calls[0]?.[4]).toBe('remove-xmp');
+    const completed = result();
+    completed.results[0]!.pdfMetadataRemoved = 2;
+    finish(completed);
+    await pending;
+    const state = useSmashStore.getState();
+    expect(state.files[state.order[0]!]!.detail).toContain('embedded metadata removed');
+    state.reset();
+    expect(useSmashStore.getState().pdfMetadata).toBe('preserve');
   });
   it('finishes an unchanged file with a reason and no download or claimed savings', async () => {
     const unchanged = result();
@@ -151,7 +176,8 @@ describe('Monoterm batch state', () => {
       [source],
       'balanced',
       undefined,
-      useSmashStore.getState().order
+      useSmashStore.getState().order,
+      'preserve'
     );
     expect(useSmashStore.getState().phase).toBe('complete');
   });

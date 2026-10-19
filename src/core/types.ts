@@ -135,6 +135,8 @@ export interface VideoPolicy {
 
 export interface DocumentPolicy {
   kind: 'document';
+  /** Explicit local consent; omission preserves XMP regardless of intensity. */
+  pdfMetadata?: 'preserve' | 'remove-xmp';
   image: ImagePolicy;
   deflateLevel: 6 | 9;
   pdfMode: 'rewrite' | 'image-adapter';
@@ -187,6 +189,7 @@ export type PreservationReason =
   | 'unsupported_codec'
   | 'no_smaller_candidate'
   | 'validation_failed'
+  | 'cleanup_unsupported'
   | 'protected_document';
 
 export type WorkerEvent =
@@ -226,6 +229,7 @@ export type WorkerEvent =
       type: 'result';
       disposition: 'transformed' | 'original';
       reason?: PreservationReason;
+      pdfMetadataRemoved?: number;
       outputBytes: number;
       mime: string;
       extension: string;

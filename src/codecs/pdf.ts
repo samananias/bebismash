@@ -92,117 +92,132 @@ export function preflightPdf(buffer: ArrayBuffer, limits: ResourceLimits): PdfPr
 
 export interface PdfRewriteResult {
   reason?: PreservationReason;
+  pdfMetadataRemoved?: number;
   disposition: 'transformed' | 'original';
   buffer: ArrayBuffer;
   pageCount: number;
 }
 
-/**
- * Performs a conservative PDF rewrite using pdf-lib:
- * Loads document, saves with object streams, and reopens to validate output integrity.
+/** Admitted worker only. Original input remains owned by the caller until output settles.
+ * Cooperative checks surround parser/save work; the scheduler also enforces a hard deadline.
  */
 export async function rewritePdf(
   buffer: ArrayBuffer,
-  _policy: DocumentPolicy,
-  limits: ResourceLimits
+  policy: DocumentPolicy,
+  limits: ResourceLimits,
+  isCancelled: () => boolean = () => false
 ): Promise<PdfRewriteResult> {
+  const deadline = performance.now() + limits.maxWallTimeMs;
+  let pageCount = 0;
+  let validation = false;
+  const original = (reason: PreservationReason): PdfRewriteResult => ({
+    disposition: 'original',
+    reason,
+    buffer,
+    pageCount,
+  });
+  const checkpoint = async () => {
+    if (isCancelled()) throw new Error('Cancelled');
+    if (performance.now() >= deadline) throw new Error('PDF deadline exceeded');
+  };
+  let lastYield = performance.now();
+  const budget = {
+    maxNodes: 100_000,
+    maxEdges: 400_000,
+    checkpoint: async () => {
+      await checkpoint();
+      if (performance.now() - lastYield >= 8) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        lastYield = performance.now();
+        await checkpoint();
+      }
+    },
+  };
   const preflight = preflightPdf(buffer, limits);
-
-  if (!preflight.valid || preflight.isEncrypted || preflight.isSigned) {
-    return {
-      disposition: 'original',
-      reason:
-        preflight.isEncrypted || preflight.isSigned ? 'protected_document' : 'unsupported_content',
-      buffer: materializeStandaloneBuffer(buffer),
-      pageCount: 0,
-    };
-  }
-
+  if (!preflight.valid || preflight.isEncrypted || preflight.isSigned)
+    return original(
+      preflight.isEncrypted || preflight.isSigned ? 'protected_document' : 'unsupported_content'
+    );
   try {
-    const { PDFDocument, PDFDict, PDFName, PDFArray } = await import('pdf-lib');
-    const pdfDoc = await PDFDocument.load(buffer, {
+    const { PDFDocument, PDFDict, PDFName } = await import('pdf-lib');
+    const {
+      PdfGraphRefusal,
+      walkPdfGraph,
+      trailerRoots,
+      validatePdfTrailers,
+      validateRetainedObjects,
+    } = await import('./pdfGraph');
+    const loadOptions = {
       ignoreEncryption: false,
       updateMetadata: false,
-    });
-
-    // Inspect parsed objects, including compressed object streams and nested field dictionaries.
-    // Raw head/tail scans alone can miss signatures in the middle of a document.
-    const visited = new Set<unknown>();
-    const protectedObject = (object: unknown): boolean => {
-      if (!object || visited.has(object)) return false;
-      visited.add(object);
-      if (object instanceof PDFDict) {
-        if (
-          object.has(PDFName.of('ByteRange')) ||
-          object.get(PDFName.of('Type'))?.toString() === '/Sig' ||
-          object.get(PDFName.of('FT'))?.toString() === '/Sig'
-        )
-          return true;
-        return object.values().some((value) => protectedObject(value));
-      }
-      return object instanceof PDFArray && object.asArray().some((value) => protectedObject(value));
+      throwOnInvalidObject: true,
+      parseSpeed: 100,
     };
-    const isSigned = pdfDoc.context
-      .enumerateIndirectObjects()
-      .some(([, object]) => protectedObject(object));
-    if (pdfDoc.isEncrypted || isSigned) {
-      return {
-        disposition: 'original',
-        reason: 'protected_document',
-        buffer: materializeStandaloneBuffer(buffer),
-        pageCount: pdfDoc.getPageCount(),
-      };
+    await checkpoint();
+    const doc = await PDFDocument.load(buffer, loadOptions);
+    await checkpoint();
+    pageCount = doc.getPageCount();
+    if (doc.isEncrypted || doc.context.trailerInfo.Encrypt) return original('protected_document');
+    let signed = false;
+    // Inspect all objects, including compressed, unreachable and nested signatures.
+    await walkPdfGraph(
+      doc.context,
+      doc.context.enumerateIndirectObjects().map(([, object]) => object),
+      budget,
+      (object) => {
+        if (
+          object instanceof PDFDict &&
+          (object.has(PDFName.of('ByteRange')) ||
+            object.get(PDFName.of('Type')) === PDFName.of('Sig') ||
+            object.get(PDFName.of('FT')) === PDFName.of('Sig'))
+        )
+          signed = true;
+      }
+    );
+    if (signed) return original('protected_document');
+    await validatePdfTrailers(new Uint8Array(buffer), doc.context, budget);
+    let removed = 0;
+    if (policy.pdfMetadata === 'remove-xmp') {
+      const { removePdfMetadata } = await import('./pdfMetadata');
+      removed = await removePdfMetadata(doc, budget);
     }
-
-    const originalPageCount = pdfDoc.getPageCount();
-
-    // Conservative rewrite using object streams (PDF 1.5+ flate compression)
-    const savedBytes = await pdfDoc.save({
+    const retained = await walkPdfGraph(doc.context, trailerRoots(doc.context), budget);
+    await checkpoint();
+    const saved = await doc.save({
       useObjectStreams: true,
       addDefaultPage: false,
+      updateFieldAppearances: false,
+      objectsPerTick: 100,
     });
-
-    // Validate reopened output per blueprint Section 4.4
-    const reopened = await PDFDocument.load(savedBytes, {
-      ignoreEncryption: false,
-      updateMetadata: false,
-    });
-
-    if (
-      savedBytes.byteLength > limits.maxOutputBytes ||
-      reopened.getPageCount() !== originalPageCount
-    ) {
-      // Validation failure: fallback to original
-      return {
-        disposition: 'original',
-        reason: 'validation_failed',
-        buffer: materializeStandaloneBuffer(buffer),
-        pageCount: originalPageCount,
-      };
+    await checkpoint();
+    if (saved.byteLength > limits.maxOutputBytes) return original('validation_failed');
+    validation = true;
+    const reopened = await PDFDocument.load(saved, loadOptions);
+    await checkpoint();
+    if (reopened.getPageCount() !== pageCount) return original('validation_failed');
+    try {
+      await walkPdfGraph(reopened.context, trailerRoots(reopened.context), budget);
+      await validateRetainedObjects(doc.context, reopened.context, retained, budget);
+    } catch (error) {
+      if (error instanceof PdfGraphRefusal) return original('validation_failed');
+      throw error;
     }
-
-    // Staging comparison: only commit if candidate is smaller than source
-    if (savedBytes.byteLength < buffer.byteLength) {
-      return {
-        disposition: 'transformed',
-        buffer: materializeStandaloneBuffer(savedBytes),
-        pageCount: originalPageCount,
-      };
-    }
-
+    await checkpoint();
+    if (saved.byteLength >= buffer.byteLength) return original('no_smaller_candidate');
     return {
-      disposition: 'original',
-      reason: 'no_smaller_candidate',
-      buffer: materializeStandaloneBuffer(buffer),
-      pageCount: originalPageCount,
+      disposition: 'transformed',
+      buffer: materializeStandaloneBuffer(saved),
+      pageCount,
+      ...(removed ? { pdfMetadataRemoved: removed } : {}),
     };
-  } catch {
-    // If parsing or saving fails, preserve original byte-identical
-    return {
-      disposition: 'original',
-      reason: 'unsupported_content',
-      buffer: materializeStandaloneBuffer(buffer),
-      pageCount: 0,
-    };
+  } catch (error) {
+    if (isCancelled()) throw new Error('Cancelled', { cause: error });
+    return original(
+      validation
+        ? 'validation_failed'
+        : policy.pdfMetadata === 'remove-xmp'
+          ? 'cleanup_unsupported'
+          : 'unsupported_content'
+    );
   }
 }

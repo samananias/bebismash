@@ -970,3 +970,26 @@ input {
   white-space: nowrap;
   border: 0;
 }
+
+.pdf-cleanup {
+  margin-block: 1.5rem;
+  max-width: 75ch;
+}
+.pdf-cleanup label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  cursor: pointer;
+}
+.pdf-cleanup input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--cobalt, #214dcc);
+  flex-shrink: 0;
+}
+.pdf-cleanup p {
+  font-size: 0.75rem;
+  line-height: 1.7;
+  margin: 0.5rem 0 0;
+}

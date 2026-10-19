@@ -67,6 +67,43 @@ async function packSecond(zip: FakeWorker) {
 }
 
 describe('scheduler result, packing, failure and cancellation lifecycle', () => {
+  it.each([1000, 25_426_294])(
+    'propagates PDF consent without overriding constrained admission (%i bytes)',
+    async (size) => {
+      vi.stubGlobal('navigator', { hardwareConcurrency: 2 });
+      const scheduler = new BatchScheduler();
+      const output = sink();
+      const file = new File(['%PDF-1.7\n'], 'synthetic.pdf');
+      Object.defineProperty(file, 'size', { value: size });
+      const pending = scheduler.processBatch([file], 'heavy', output, undefined, 'remove-xmp');
+      await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+      const worker = FakeWorker.all[0]!;
+      const cmd = worker.commands[0] as Extract<WorkerCommand, { type: 'start' }>;
+      const refused = size > 1000;
+      expect(worker.url.pathname).toContain(refused ? 'generic.worker' : 'pdf.worker');
+      if (!refused) expect(cmd.config.policy).toMatchObject({ pdfMetadata: 'remove-xmp' });
+      worker.receive({
+        version: 1,
+        batchId: cmd.batchId,
+        jobId: cmd.jobId,
+        attemptId: cmd.attemptId,
+        type: 'result',
+        disposition: 'original',
+        outputBytes: size,
+        mime: 'application/pdf',
+        extension: 'pdf',
+        durationMs: 1,
+      });
+      const result = await pending;
+      expect(result.results[0]?.reason).toBe(refused ? 'memory_limit' : 'no_smaller_candidate');
+      expect(output.open).not.toHaveBeenCalled();
+      expect(output.write).not.toHaveBeenCalled();
+      expect(result.archive).toBeNull();
+      expect(worker.terminate).toHaveBeenCalled();
+      cmd.outputPort.close();
+    }
+  );
+
   beforeEach(() => {
     FakeWorker.all = [];
     vi.stubGlobal('Worker', FakeWorker);

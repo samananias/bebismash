@@ -1,7 +1,9 @@
 # Compression limits and fidelity: revised investigation and rollout
 
-Date: 2026-10-16
+Date: 2026-10-17 (sample comparison added; implementation increment remains dated 2026-10-16)
 Status: First implementation increment; large-output streaming and new codec capabilities remain gated.
+
+Next work is planning only at the user's request. See [the next-day PDF implementation plan](pdf-compression-next-day-plan.md) for 2026-10-18 / the next session. No further implementation is authorized in this planning session.
 
 This revision replaces the earlier proposal's universal savings targets and constant-memory claims. The authoritative engineering constraints are in [the blueprint](MASTER_ENGINEERING_BLUEPRINT.md). Changing implementation status and checks belong in [progress.md](progress.md); contract changes are recorded in [ADR 0006](adr/0006-compression-outcomes-and-bounded-video.md).
 
@@ -14,7 +16,15 @@ This revision replaces the earlier proposal's universal savings targets and cons
 - Single-file picker filters were missing. Because suggestedName already included the filename, this alone did not establish the cause of the reported extensionless output.
 - Original-preserving fallback was presented as a downloadable success without distinguishing unsupported content, memory admission, or an unsuccessful candidate.
 
-These are code-supported findings. No private user MP4 or PDF was inspected, so the original reported files' specific fallback causes remain unconfirmed.
+These are code-supported findings. A user-supplied PDF pair was subsequently inspected on 2026-10-17; see [the measured comparison](pdf-comparison-findings.md). The original reported MP4's specific fallback cause remains unconfirmed.
+
+## Measured PDF priority correction — 2026-10-17
+
+The supplied 706-page comparison changes the next priority: the 25,426,294-byte baseline contains 16,188,658 bytes of XML metadata across 388 reachable streams, versus 3,632,709 bytes of embedded images. The 6,637,520-byte comparison output has no XML metadata streams and contains 1,213,696 bytes of image payloads. Image optimization alone cannot explain the difference.
+
+A local metadata-cleanup prototype using the existing pdf-lib dependency produced 8,971,816 bytes (64.7% smaller), retaining every image payload and all page-content streams unchanged. All 706 extracted page texts and page geometries matched; six sampled pages rendered pixel-identically with an independent PDFium renderer. XMP removal is a real metadata tradeoff, not preservation of every document property. The prototype is not integrated into the application, browser-benchmarked or a universal guarantee.
+
+Before embedded-image work, design an explicit metadata-cleanup option: preserve metadata by default, clearly disclose XMP removal, detach only validated Metadata references, then reclaim provably unreachable objects from trailer roots. Do not indiscriminately delete XML, embedded files, forms, rights information or attachments. Keep signed/encrypted/PDF-A-sensitive documents gated. Add synthetic tests for shared references, unknown objects, cleanup/cancellation and exact preservation of content/image/font streams. Merely removing dictionary references without garbage collection can leave the large streams serialized.
 
 ## Product contract
 
@@ -64,6 +74,8 @@ JPEGs carrying EXIF, ICC or IPTC segments remain unchanged until orientation/col
 ## PDF: next adapter increment
 
 The baseline now checks parsed signature dictionaries, including compressed object streams, rather than relying solely on first/last-64-KiB marker scans. Signed/encrypted documents remain byte-preserved. A smaller rewrite is not equivalent to independent semantic fidelity validation.
+
+The measured metadata-cleanup work above precedes the image adapter. It offers substantial savings for this sample without changing image resolution, while requiring explicit metadata-removal UX and reachability tests.
 
 The image adapter must be implemented as its own bounded capability:
 
